@@ -1,23 +1,29 @@
-# Save this file as: src/data_acquisition.py
-
 import os
 import pandas as pd
 from sentinelsat import SentinelAPI
 from datetime import date
+from dotenv import load_dotenv  # 👈 --- 1. Import library ---
 
 # --- 1. Configuration ---
-# ⚠️ UPDATE YOUR CREDENTIALS
-API_USER = 'your_copernicus_username' 
-API_PASS = 'your_copernicus_password'
+load_dotenv()  # 👈 --- 2. Load variables from .env file ---
+
+# ⚠️ --- 3. Get credentials from environment ---
+# os.getenv() safely reads the variables.
+API_USER = os.getenv('COPERNICUS_USER')
+API_PASS = os.getenv('COPERNICUS_PASS')
 API_URL = 'https://dataspace.copernicus.eu/lta'
 
-# ⚠️ Point this to your ground-truth file
+# Check if credentials are loaded
+if not API_USER or not API_PASS:
+    print("❌ Error: API_USER or API_PASS not found in .env file.")
+    print("Please create a .env file in the project root with your credentials.")
+    exit()
+
+# Point this to your ground-truth file
 LUCAS_FILE_PATH = 'data/external/LUCAS SOIL Modified.csv' 
 DOWNLOAD_DIR = 'data/raw/'
-# ⬇️ *** FIXED LINE *** ⬇️
-# Removed leading zero from '08'
-DATE_RANGE = ('2018-05-01', date(2018, 8, 31)) # ⚠️ Set your desired date range
-CLOUD_COVER = (0, 20) # ⚠️ Set max cloud cover
+DATE_RANGE = (date(2018, 5, 1), date(2018, 8, 31)) 
+CLOUD_COVER = (0, 20) 
 
 # --- 2. Generate AOI from LUCAS File ---
 print(f"1. Reading LUCAS file to generate AOI: {LUCAS_FILE_PATH}")
@@ -40,6 +46,7 @@ print(f"   Generated Bounding Box: {AOI_WKT}")
 
 # --- 3. Connect and Search API ---
 try:
+    # Pass the loaded variables to the API
     api = SentinelAPI(API_USER, API_PASS, API_URL)
     print("2. Connected to Copernicus API")
 except Exception as e:
