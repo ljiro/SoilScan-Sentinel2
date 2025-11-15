@@ -1,9 +1,8 @@
-pandas
-numpy
-sentinelsat
 rasterio
 geopandas
 scikit-learn
 open-meteo
+requests
 requests-cache
 retry-requests
+python-dotenv
