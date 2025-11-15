@@ -11,7 +11,9 @@ load_dotenv()  # 👈 --- 2. Load variables from .env file ---
 # os.getenv() safely reads the variables.
 API_USER = os.getenv('COPERNICUS_USER')
 API_PASS = os.getenv('COPERNICUS_PASS')
-API_URL = 'https://dataspace.copernicus.eu/lta'
+# ⬇️ *** FIXED LINE *** ⬇️
+# Changed from '/lta' to the correct '/catalogue' endpoint
+API_URL = 'https://catalogue.dataspace.copernicus.eu/'
 
 # Check if credentials are loaded
 if not API_USER or not API_PASS:
