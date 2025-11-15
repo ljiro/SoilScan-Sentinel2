@@ -14,7 +14,9 @@ API_URL = 'https://dataspace.copernicus.eu/lta'
 # ⚠️ Point this to your ground-truth file
 LUCAS_FILE_PATH = 'data/external/LUCAS SOIL Modified.csv' 
 DOWNLOAD_DIR = 'data/raw/'
-DATE_RANGE = ('2018-05-01', date(2018, 08, 31)) # ⚠️ Set your desired date range
+# ⬇️ *** FIXED LINE *** ⬇️
+# Removed leading zero from '08'
+DATE_RANGE = ('2018-05-01', date(2018, 8, 31)) # ⚠️ Set your desired date range
 CLOUD_COVER = (0, 20) # ⚠️ Set max cloud cover
 
 # --- 2. Generate AOI from LUCAS File ---
@@ -26,7 +28,7 @@ except FileNotFoundError:
     print("Please place your file in the 'data/external/' directory.")
     exit()
 
-# Find the bounding box[cite: 966, 992], adding a small buffer
+# Find the bounding box, adding a small buffer
 min_lon = df_lucas['TH_LONG'].min() - 0.01
 max_lon = df_lucas['TH_LONG'].max() + 0.01
 min_lat = df_lucas['TH_LAT'].min() - 0.01
@@ -44,7 +46,7 @@ except Exception as e:
     print(f"❌ Failed to connect to API. Check credentials. Error: {e}")
     exit()
 
-# Search for Sentinel-2, Level-2A (atmospherically corrected) products [cite: 61]
+# Search for Sentinel-2, Level-2A (atmospherically corrected) products
 products = api.query(
     AOI_WKT,
     date=DATE_RANGE,
@@ -64,7 +66,7 @@ print(f"3. Found {len(products_df)} products. Selected least cloudy: {product_to
 # --- 4. Download Products ---
 print(f"4. ⬇️ Downloading product...")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-# Download the full .SAFE zip file and unzip it [cite: 208]
+# Download the full .SAFE zip file and unzip it
 api.download(
     product_to_download.name, 
     directory_path=DOWNLOAD_DIR,
@@ -72,4 +74,4 @@ api.download(
 )
 
 print(f"✅ Download complete and unzipped to: {DOWNLOAD_DIR}")
-print("\nNext step: Run `src/add_raster_features.py`")vvv
+print("\nNext step: Run `src/add_raster_features.py`")

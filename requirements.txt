@@ -1,0 +1,9 @@
+pandas
+numpy
+sentinelsat
+rasterio
+geopandas
+scikit-learn
+open-meteo
+requests-cache
+retry-requests
