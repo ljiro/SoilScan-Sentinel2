@@ -10,8 +10,8 @@ import io
 load_dotenv()
 
 # --- 1. Configuration ---
-CLIENT_ID = os.getenv('COPERNICUS_CLIENT_ID')
-CLIENT_SECRET = os.getenv('COPERNICUS_CLIENT_SECRET')
+CLIENT_ID = os.getenv('COPERNICUS_CLIENT_ID') or os.getenv('COPERNICUS_USER')
+CLIENT_SECRET = os.getenv('COPERNICUS_CLIENT_SECRET') or os.getenv('COPERNICUS_PASS')
 
 # Endpoints for the new Copernicus Data Space Ecosystem
 AUTH_URL = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
@@ -39,7 +39,7 @@ try:
     access_token = response.json()['access_token']
     print("   ✅ Authentication successful.")
 except Exception as e:
-    print(f"❌ FAILED to authenticate. Check COPERNICUS_CLIENT_ID and COPERNICUS_CLIENT_SECRET in .env file.")
+    print(f"❌ FAILED to authenticate. Check COPERNICUS_CLIENT_ID/COPERNICUS_CLIENT_SECRET (or COPERNICUS_USER/COPERNICUS_PASS) in .env file.")
     print(f"   Error: {e}")
     exit(1)
 

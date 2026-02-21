@@ -6,3 +6,11 @@ requests
 requests-cache
 retry-requests
 python-dotenv
+sentinelhub
+xgboost
+pandas
+numpy
+tqdm
+matplotlib
+scipy
+boto3
