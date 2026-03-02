@@ -22,6 +22,7 @@ from sklearn.metrics import (
     f1_score,
     mean_absolute_error,
 )
+from sklearn.inspection import permutation_importance
 from sklearn.model_selection import GroupKFold
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.svm import SVC
@@ -146,34 +147,81 @@ def _ci95(values):
     return h
 
 
-def plot_feature_importance(model, preprocessor, num_features, cat_features, target_col, out_dir):
-    """Save a horizontal bar chart of top-20 feature importances."""
-    # Reconstruct feature names after one-hot encoding
+def get_feature_names(preprocessor, num_features, cat_features):
+    """Return the full ordered list of feature names after preprocessing."""
     ohe = preprocessor.named_transformers_["cat"]
     cat_names = list(ohe.get_feature_names_out(cat_features))
-    feature_names = num_features + cat_names
+    return num_features + cat_names
 
-    importances = model.feature_importances_
-    if len(importances) != len(feature_names):
-        # Mismatch (e.g. OHE produced different number) — use generic names
-        feature_names = [f"f{i}" for i in range(len(importances))]
 
-    idx = np.argsort(importances)[-20:]  # top 20
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.barh(
-        [feature_names[i] for i in idx],
-        importances[idx],
-        color="steelblue",
-    )
-    ax.set_xlabel("Feature Importance (gain)")
-    ax.set_title(f"Feature Importance — {target_col.capitalize()}")
+def compute_importances(model, model_name, X_test_tr, y_test,
+                        preprocessor, num_features, cat_features):
+    """
+    Return (feature_names, importances_array) for any model type.
+    - XGBoost / RandomForest: use built-in feature_importances_ (fast).
+    - SVM: use permutation importance on the last-fold test set (slower but valid).
+    """
+    feature_names = get_feature_names(preprocessor, num_features, cat_features)
+
+    if hasattr(model, "feature_importances_"):
+        importances = model.feature_importances_
+        if len(importances) != len(feature_names):
+            feature_names = [f"f{i}" for i in range(len(importances))]
+    else:
+        # Permutation importance for SVM
+        result = permutation_importance(
+            model, X_test_tr, y_test,
+            n_repeats=10, random_state=42, n_jobs=-1,
+            scoring="accuracy",
+        )
+        importances = result.importances_mean
+        if len(importances) != len(feature_names):
+            feature_names = [f"f{i}" for i in range(len(importances))]
+
+    return feature_names, importances
+
+
+def plot_feature_importance(model, model_name, X_test_tr, y_test,
+                            preprocessor, num_features, cat_features,
+                            target_col, out_dir, top_n=15):
+    """
+    Save a horizontal bar chart of top-N feature importances.
+    Works for XGBoost, RandomForest (built-in) and SVM (permutation).
+    Color-coded by model.
+    """
+    MODEL_COLORS = {"XGBoost": "#2E74B5", "RandomForest": "#2EA86E", "SVM": "#E05C3A"}
+    color = MODEL_COLORS.get(model_name, "steelblue")
+
+    feature_names, importances = compute_importances(
+        model, model_name, X_test_tr, y_test, preprocessor, num_features, cat_features)
+
+    idx  = np.argsort(importances)[-top_n:]
+    vals = importances[idx]
+    names = [feature_names[i] for i in idx]
+
+    fig, ax = plt.subplots(figsize=(8, max(4, top_n * 0.38)))
+    bars = ax.barh(names, vals, color=color, alpha=0.85, edgecolor="white")
+
+    # Value labels on each bar
+    for bar, v in zip(bars, vals):
+        ax.text(bar.get_width() + max(vals) * 0.01, bar.get_y() + bar.get_height() / 2,
+                f"{v:.4f}", va="center", fontsize=7.5, color="#333333")
+
+    ax.set_xlabel("Importance  (gain for XGB/RF,  accuracy drop for SVM)", fontsize=9)
+    ax.set_title(f"Top {top_n} Features — {target_col.upper()} [{model_name}]",
+                 fontsize=11, fontweight="bold")
+    ax.set_xlim(0, max(vals) * 1.18)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
     plt.tight_layout()
 
     os.makedirs(out_dir, exist_ok=True)
-    path = os.path.join(out_dir, f"feature_importance_{target_col}.png")
+    path = os.path.join(out_dir, f"feature_importance_{target_col}_{model_name}.png")
     fig.savefig(path, dpi=150)
     plt.close(fig)
-    print(f"  Feature importance plot saved: {path}")
+    print(f"  Feature importance saved: {path}")
+
+    return feature_names, importances
 
 
 def plot_confusion_matrix(cm, target_col, out_dir, class_names=None):
@@ -258,9 +306,15 @@ def _build_models(n_classes):
 
 def _run_one_model(model, model_name, X_valid, y_valid, groups_valid,
                    preprocessor, gkf):
-    """Run GroupKFold for one model. Returns (y_true, y_pred, fold_metrics_dict)."""
+    """Run GroupKFold for one model.
+
+    Returns (y_true, y_pred, fold_metrics_dict, last_Xte, last_yte).
+    last_Xte / last_yte are the preprocessed test arrays from the final fold —
+    used later for permutation importance (SVM) and feature importance plots.
+    """
     fold_oa, fold_f1, fold_wf1, fold_kappa, fold_mae = [], [], [], [], []
     all_true, all_pred = [], []
+    last_Xte, last_yte = None, None
 
     for train_idx, test_idx in gkf.split(X_valid, y_valid, groups=groups_valid):
         Xtr = preprocessor.fit_transform(X_valid.iloc[train_idx])
@@ -281,11 +335,14 @@ def _run_one_model(model, model_name, X_valid, y_valid, groups_valid,
         fold_wf1.append(f1_score(yte, yp, average="weighted", zero_division=0))
         fold_kappa.append(cohen_kappa_score(yte, yp))
         fold_mae.append(mean_absolute_error(yte, yp))
+        # Keep the last fold's test split for importance computation
+        last_Xte, last_yte = Xte, yte.values
 
     return (
         np.array(all_true), np.array(all_pred),
         dict(oa=fold_oa, macro_f1=fold_f1, weighted_f1=fold_wf1,
              kappa=fold_kappa, mae=fold_mae),
+        last_Xte, last_yte,
     )
 
 
@@ -411,14 +468,15 @@ def train_and_evaluate(df, X, groups, target_col, preprocessor,
         print(f"  Note: {n_groups} unique groups — using {n_splits}-fold.")
     gkf = GroupKFold(n_splits=n_splits)
 
-    models          = _build_models(n_classes)
+    models           = _build_models(n_classes)
     results_by_model = {}
     cms              = {}
+    importances_by_model = {}   # model_name -> (feature_names, importances_array)
     best_model, best_oa = None, -1
 
     for model_name, model in models.items():
         print(f"\n  Training {model_name}...")
-        y_true, y_pred, folds = _run_one_model(
+        y_true, y_pred, folds, last_Xte, last_yte = _run_one_model(
             model, model_name, X_valid, y_valid, groups_valid, preprocessor, gkf)
         metrics_dict, cm = _print_one_model(
             model_name, y_true, y_pred, folds,
@@ -429,23 +487,27 @@ def train_and_evaluate(df, X, groups, target_col, preprocessor,
         if metrics_dict["oa"] > best_oa:
             best_oa, best_model = metrics_dict["oa"], model
 
+        # Feature importance for every model
+        print(f"  Computing feature importance for {model_name}...")
+        feat_names, imps = plot_feature_importance(
+            model, model_name, last_Xte, last_yte,
+            preprocessor, num_features, cat_features,
+            target_col, figures_dir,
+        )
+        importances_by_model[model_name] = (feat_names, imps)
+
     best_name = max(results_by_model, key=lambda n: results_by_model[n]["oa"])
     print(f"\n  Best for {target_col}: {best_name} "
           f"(OA={results_by_model[best_name]['oa']:.4f})")
 
     plot_model_comparison(results_by_model, target_col, figures_dir)
 
-    # Save a confusion matrix for every model so they can all be compared
+    # Confusion matrix for every model
     for model_name in results_by_model:
         plot_confusion_matrix(cms[model_name], f"{target_col}_{model_name}",
                               figures_dir, class_names=class_names)
 
-    # Feature importance only for the best model (tree-based only)
-    if hasattr(best_model, "feature_importances_"):
-        plot_feature_importance(best_model, preprocessor, num_features, cat_features,
-                                f"{target_col}_{best_name}", figures_dir)
-
-    return best_model, list(results_by_model.values())
+    return best_model, list(results_by_model.values()), importances_by_model
 
 
 def save_summary_table(results, out_dir="outputs"):
@@ -475,15 +537,32 @@ if __name__ == "__main__":
     df, X, groups, targets, num_feat, cat_feat = load_and_prepare_data(args.data_path)
     preprocessor = build_pipeline(num_feat, cat_feat)
 
-    all_results = []
+    all_results       = []
+    all_importances   = {}   # (target, model) -> (feat_names, imps)
+
     for t in targets:
         if t not in df.columns:
             continue
-        _, metrics_list = train_and_evaluate(
+        _, metrics_list, imp_by_model = train_and_evaluate(
             df, X, groups, t, preprocessor,
             num_feat, cat_feat, figures_dir=args.figures_dir,
         )
         all_results.extend(metrics_list)
+        for model_name, (feat_names, imps) in imp_by_model.items():
+            all_importances[(t, model_name)] = (feat_names, imps)
 
     if all_results:
         save_summary_table(all_results, out_dir=args.output_dir)
+
+    # Save importances as CSV so plot_pubmat can load them without re-training
+    if all_importances:
+        rows = []
+        for (tgt, mdl), (feat_names, imps) in all_importances.items():
+            for fn, iv in zip(feat_names, imps):
+                rows.append({"target": tgt, "model": mdl,
+                             "feature": fn, "importance": iv})
+        imp_df = pd.DataFrame(rows)
+        imp_path = os.path.join(args.output_dir, "feature_importances.csv")
+        os.makedirs(args.output_dir, exist_ok=True)
+        imp_df.to_csv(imp_path, index=False)
+        print(f"\nFeature importances saved: {imp_path}")

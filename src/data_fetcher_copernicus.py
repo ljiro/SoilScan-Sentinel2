@@ -592,6 +592,42 @@ def bbox_wkt(min_lon, min_lat, max_lon, max_lat):
     return f"POLYGON(({min_lon} {min_lat}, {max_lon} {min_lat}, {max_lon} {max_lat}, {min_lon} {max_lat}, {min_lon} {min_lat}))"
 
 
+def _append_rows_safe(df_chunk, output_path, retries=6, delay=5):
+    """Append df_chunk to output_path with retry logic.
+
+    Handles PermissionError (file open in Excel / another process) by
+    waiting and retrying up to `retries` times.  If still locked after all
+    retries, the rows are saved to a numbered sidecar file so no data is lost.
+    """
+    import time
+    for attempt in range(1, retries + 1):
+        try:
+            df_chunk.to_csv(output_path, mode="a", header=False, index=False)
+            # Count rows for progress display
+            try:
+                total = sum(1 for _ in open(output_path)) - 1
+            except Exception:
+                total = "?"
+            print(f"  Saved {len(df_chunk)} rows to {output_path} "
+                  f"(total so far: {total})")
+            return
+        except PermissionError:
+            if attempt == 1:
+                print(f"  WARNING: {output_path} is locked "
+                      f"(open in Excel?). Retrying in {delay}s...")
+            else:
+                print(f"  Still locked — retry {attempt}/{retries} in {delay}s...")
+            time.sleep(delay)
+
+    # All retries exhausted — save to a sidecar so no data is lost
+    base, ext = os.path.splitext(output_path)
+    sidecar = f"{base}_overflow_{int(__import__('time').time())}{ext}"
+    df_chunk.to_csv(sidecar, index=False)
+    print(f"  ERROR: Could not write to {output_path} after {retries} retries.")
+    print(f"  Rows saved to sidecar file: {sidecar}")
+    print(f"  Close the file in Excel, then manually merge the sidecar.")
+
+
 def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
                                   num_chunks=4):
     """Load field CSV, download S2 products per (spatial cell, date), sample bands, save.
@@ -627,11 +663,24 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
 
     print("Authenticating with Copernicus...")
 
+    # ── Detect already-processed keys from existing output CSV ───────────────
+    already_saved_uuids = set()
+    if output_path and os.path.exists(output_path):
+        try:
+            existing = pd.read_csv(output_path, usecols=["uuid"])
+            already_saved_uuids = set(existing["uuid"].dropna().astype(str).tolist())
+        except Exception:
+            already_saved_uuids = set()
+
+    def _key_already_done(key):
+        """Return True if every uuid belonging to this key is already in the output."""
+        group_uuids = set(df[df["_key"] == key]["uuid"].astype(str).tolist())
+        return bool(group_uuids) and group_uuids.issubset(already_saved_uuids)
+
     # Pre-init output CSV with header so training can start on partial data
     if output_path:
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
         if not os.path.exists(output_path):
-            # Write empty file with header so we can append later
             base_cols = [c for c in df.columns
                          if c not in ("_lat_cell", "_lon_cell", "_key", "_capture_date")]
             pd.DataFrame(columns=base_cols + BAND_NAMES).to_csv(output_path, index=False)
@@ -640,6 +689,12 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
     key_to_safe = {}
 
     for i, (lc, lonc, d) in enumerate(keys):
+        # ── Skip if all rows for this key are already in the output CSV ──────
+        if _key_already_done((lc, lonc, d)):
+            print(f"  [{i+1}/{len(keys)}] Already processed — skipping "
+                  f"cell ({lc:.4f},{lonc:.4f}) date {d}")
+            continue
+
         # Re-authenticate before each group: CDSE tokens expire in ~600 s (10 min)
         auth_headers = get_auth_headers()
 
@@ -673,10 +728,7 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
                 base = row.drop(labels=["_lat_cell", "_lon_cell", "_key", "_capture_date"])
                 rows_out.append({**base.to_dict(), **dict(zip(BAND_NAMES, vals.tolist()))})
             if rows_out:
-                pd.DataFrame(rows_out).to_csv(output_path, mode="a", header=False, index=False)
-                total_so_far = sum(1 for _ in open(output_path)) - 1  # subtract header
-                print(f"  Saved {len(rows_out)} rows → {output_path} "
-                      f"(total so far: {total_so_far})")
+                _append_rows_safe(pd.DataFrame(rows_out), output_path)
 
     # Final pass for any keys that were already extracted before this run
     # (i.e., .SAFE existed on disk — these were skipped in the loop above)
@@ -701,7 +753,7 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
                     base = row.drop(labels=["_lat_cell", "_lon_cell", "_key", "_capture_date"])
                     extra_rows.append({**base.to_dict(), **dict(zip(BAND_NAMES, vals.tolist()))})
             if extra_rows:
-                pd.DataFrame(extra_rows).to_csv(output_path, mode="a", header=False, index=False)
+                _append_rows_safe(pd.DataFrame(extra_rows), output_path)
 
         final = pd.read_csv(output_path)
         print(f"\nDone. {len(final)} rows with full band data saved to {output_path}")
