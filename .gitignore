@@ -21,3 +21,5 @@ pycache/
 
 .DS_Store
 Thumbs.db
+# SQLite cache files
+*.sqlite

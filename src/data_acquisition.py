@@ -1,3 +1,18 @@
+"""
+LEGACY SCRIPT — European LUCAS workflow. DO NOT USE for the Philippine pipeline.
+
+This script was adapted from cvims/AgroLens and targets the original European LUCAS
+soil survey dataset. It uses 'client_credentials' authentication and expects a LUCAS
+CSV with 'TH_LONG' / 'TH_LAT' columns.
+
+For the Philippine field data pipeline (SoilScan-Sentinel2), use:
+    src/data_fetcher_copernicus.py
+
+That script handles Sentinel-2 L2A product search, download (HTTP + S3), band
+extraction, and spectral index computation for Philippine GPS coordinates collected
+via the AgriCapture mobile app.
+"""
+
 import os
 import pandas as pd
 import requests
@@ -117,10 +132,8 @@ for product in products:
                 if attr.get('Name') == 'cloudCover':
                     cloud_cover = attr.get('Value')
                     break
-    except:
+    except Exception:
         pass
-    
-    # If we have cloud cover info, use it to filter
     if cloud_cover is None or float(cloud_cover) <= CLOUD_COVER:
         filtered_products.append({
             'Id': product['Id'],
@@ -199,7 +212,7 @@ try:
                 with open(zip_path, 'r', encoding='utf-8') as f:
                     error_content = f.read()
                     print(f"   Server response: {error_content}")
-            except:
+            except Exception:
                 print(f"   Could not read error response")
             
     else:

@@ -1,4 +1,18 @@
 # Save this file as: src/add_raster_features.py
+"""
+LEGACY SCRIPT — European LUCAS / AgroLens workflow. DO NOT USE for the Philippine pipeline.
+
+This script loads the European LUCAS SOIL dataset and extracts Sentinel-2 raster
+features for those coordinates. It is kept for reference only.
+
+For the Philippine pipeline (SoilScan-Sentinel2), band extraction and spectral
+index computation are handled directly by:
+    src/data_fetcher_copernicus.py
+
+That script fetches Sentinel-2 L2A tiles for Philippine GPS coordinates (Benguet)
+and computes the 12 spectral bands + 10 vegetation indices needed for ordinal
+classification training.
+"""
 
 import pandas as pd
 import geopandas as gpd

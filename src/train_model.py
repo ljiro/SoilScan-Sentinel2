@@ -1,4 +1,18 @@
 # Save this file as: src/train_model.py
+"""
+LEGACY REGRESSION SCRIPT — European AgroLens workflow. DO NOT USE for the Philippine pipeline.
+
+This script trains a Random Forest *regressor* on continuous N/P/K values from the
+LUCAS dataset, mirroring the original cvims/AgroLens approach.
+
+For the Philippine pipeline (SoilScan-Sentinel2) use:
+    src/train_ordinal.py
+
+That script performs ordinal *classification* (Low / Medium / High for NPK; 11-class
+CPR scale for pH) with spatial cross-validation (GroupKFold by barangay) and
+class-imbalance weighting — the correct framing for Rapid Soil Test Kit (STK) data
+collected in Benguet, Philippines.
+"""
 
 import pandas as pd
 from sklearn.model_selection import train_test_split
