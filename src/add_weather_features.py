@@ -1,5 +1,6 @@
 # Save this file as: src/add_weather_features.py
 
+import os
 import pandas as pd
 import numpy as np
 import requests
@@ -129,25 +130,21 @@ for idx, (lat, lon, date_obj) in unique_coords_dates.iterrows():
         mask = (df['TH_LAT'] == lat) & (df['TH_LONG'] == lon) & (df['SURVEY_DATE_dt'] == date_obj)
         np.random.seed(int(lat * 1000 + lon * 100))  # Seed based on location for consistency
         
-        # Simulate realistic weather based on season and location
+        # Simulate realistic weather for Philippine tropical highlands (Benguet, ~1300-2400m)
         month = date_obj.month
-        # Seasonal adjustments
-        if month in [12, 1, 2]:  # Winter
-            temp_base = 0 + (lat - 45) * (-0.5)  # Colder in north
-            precip_base = 3.0
-        elif month in [3, 4, 5]:  # Spring
-            temp_base = 10 + (lat - 45) * (-0.5)
-            precip_base = 2.5
-        elif month in [6, 7, 8]:  # Summer  
-            temp_base = 20 + (lat - 45) * (-0.5)
-            precip_base = 2.0
-        else:  # Fall
-            temp_base = 12 + (lat - 45) * (-0.5)
-            precip_base = 2.8
+        # Philippine seasons: dry season Nov-May, wet season Jun-Oct
+        if month in [6, 7, 8, 9, 10]:  # Wet season (habagat / SW monsoon)
+            temp_base = 18.0  # Cooler and cloudier during wet season
+            precip_base = 12.0  # Heavy monsoon rainfall
+            humidity_low, humidity_high = 75, 95
+        else:  # Dry season Nov-May (amihan / NE monsoon)
+            temp_base = 22.0  # Warmer and sunnier during dry season
+            precip_base = 2.5  # Low rainfall
+            humidity_low, humidity_high = 55, 80
         
-        df.loc[mask, 'temperature_2m'] = temp_base + np.random.normal(0, 3, mask.sum())
+        df.loc[mask, 'temperature_2m'] = temp_base + np.random.normal(0, 2, mask.sum())
         df.loc[mask, 'precipitation'] = np.maximum(0, np.random.exponential(precip_base, mask.sum()))
-        df.loc[mask, 'relative_humidity_2m'] = np.random.uniform(40, 85, mask.sum())
+        df.loc[mask, 'relative_humidity_2m'] = np.random.uniform(humidity_low, humidity_high, mask.sum())
         df.loc[mask, 'dew_point_2m'] = df.loc[mask, 'temperature_2m'] - np.random.exponential(3, mask.sum())
     
     # Progress reporting
@@ -171,25 +168,22 @@ if missing_mask.any():
         date_obj = df.loc[idx, 'SURVEY_DATE_dt']
         month = date_obj.month
         
-        # Seasonal and geographic adjustments
-        if month in [12, 1, 2]:  # Winter
-            temp_base = 0 + (lat - 45) * (-0.5)
-            precip_base = 3.0
-        elif month in [3, 4, 5]:  # Spring
-            temp_base = 10 + (lat - 45) * (-0.5)
-            precip_base = 2.5
-        elif month in [6, 7, 8]:  # Summer
-            temp_base = 20 + (lat - 45) * (-0.5)  
-            precip_base = 2.0
-        else:  # Fall
-            temp_base = 12 + (lat - 45) * (-0.5)
-            precip_base = 2.8
+        # Seasonal adjustments for Philippine tropical highlands (Benguet, ~1300-2400m)
+        # Philippine seasons: dry season Nov-May, wet season Jun-Oct
+        if month in [6, 7, 8, 9, 10]:  # Wet season (habagat / SW monsoon)
+            temp_base = 18.0  # Cooler and cloudier during wet season
+            precip_base = 12.0  # Heavy monsoon rainfall
+            humidity_low, humidity_high = 75, 95
+        else:  # Dry season Nov-May (amihan / NE monsoon)
+            temp_base = 22.0  # Warmer and sunnier during dry season
+            precip_base = 2.5  # Low rainfall
+            humidity_low, humidity_high = 55, 80
         
         np.random.seed(int(lat * 1000 + lon * 100 + month))
         
-        df.loc[idx, 'temperature_2m'] = temp_base + np.random.normal(0, 3)
+        df.loc[idx, 'temperature_2m'] = temp_base + np.random.normal(0, 2)
         df.loc[idx, 'precipitation'] = max(0, np.random.exponential(precip_base))
-        df.loc[idx, 'relative_humidity_2m'] = np.random.uniform(40, 85)
+        df.loc[idx, 'relative_humidity_2m'] = np.random.uniform(humidity_low, humidity_high)
         df.loc[idx, 'dew_point_2m'] = df.loc[idx, 'temperature_2m'] - np.random.exponential(3)
 
 # --- 5. Add Seasonal Features ---
@@ -198,12 +192,10 @@ print("4. Adding seasonal features...")
 # Extract month from sampling date
 df['month'] = df['SURVEY_DATE_dt'].dt.month
 
-# Add seasonal indicators
+# Add Philippine seasonal indicators (dry season Nov-May, wet season Jun-Oct)
 seasons = {
-    'winter': [12, 1, 2],
-    'spring': [3, 4, 5], 
-    'summer': [6, 7, 8],
-    'fall': [9, 10, 11]
+    'wet_season': [6, 7, 8, 9, 10],   # Habagat / SW monsoon
+    'dry_season': [11, 12, 1, 2, 3, 4, 5],  # Amihan / NE monsoon
 }
 
 for season, months in seasons.items():
