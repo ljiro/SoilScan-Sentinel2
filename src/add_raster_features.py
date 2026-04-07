@@ -1,4 +1,3 @@
-# Save this file as: src/add_raster_features.py
 """
 LEGACY SCRIPT — European LUCAS / AgroLens workflow. DO NOT USE for the Philippine pipeline.
 
@@ -12,17 +11,26 @@ index computation are handled directly by:
 That script fetches Sentinel-2 L2A tiles for Philippine GPS coordinates (Benguet)
 and computes the 12 spectral bands + 10 vegetation indices needed for ordinal
 classification training.
+
+--- Improvements applied to this legacy script ---
+- Warns when multiple .SAFE directories are found; uses most recently modified
+- Vegetation indices use shared compute_vegetation_indices() from utils.py
+- Replaced bare exit() with sys.exit()
 """
 
-import pandas as pd
+import glob
+import os
+import re
+import sys
+
 import geopandas as gpd
+import numpy as np
+import pandas as pd
 import rasterio
 import rasterio.sample
 from rasterio.windows import Window
-import os
-import re
-import numpy as np
-import glob
+
+from utils import compute_vegetation_indices
 
 # --- 1. Configuration ---
 LUCAS_FILE_PATH = 'data/external/LUCAS SOIL Modified.csv'
@@ -31,11 +39,24 @@ OUTPUT_CSV_PATH = 'data/processed/LUCAS_with_Raster_Features.csv'
 
 # --- 2. Helper Functions ---
 def find_safe_directory():
-    """Find the downloaded .SAFE directory automatically"""
-    safe_dirs = glob.glob('data/raw/S2A_MSIL2A_*.SAFE') + glob.glob('data/raw/S2B_MSIL2A_*.SAFE')
-    if safe_dirs:
-        return safe_dirs[0]
-    return None
+    """Find the downloaded .SAFE directory in data/raw/.
+
+    If multiple directories exist, the most recently modified one is used
+    and a warning is printed so the user can verify the selection.
+    """
+    safe_dirs = (
+        glob.glob('data/raw/S2A_MSIL2A_*.SAFE')
+        + glob.glob('data/raw/S2B_MSIL2A_*.SAFE')
+    )
+    if not safe_dirs:
+        return None
+    if len(safe_dirs) > 1:
+        safe_dirs.sort(key=os.path.getmtime, reverse=True)
+        print(f"   WARNING: {len(safe_dirs)} .SAFE directories found. "
+              f"Using the most recently modified one:")
+        for d in safe_dirs:
+            print(f"     {'*' if d == safe_dirs[0] else ' '} {d}")
+    return safe_dirs[0]
 
 def find_jp2_files(safe_dir):
     """Find all .jp2 files in the SAFE directory structure"""
@@ -78,8 +99,8 @@ print(f"1. Loading LUCAS data from {LUCAS_FILE_PATH}...")
 try:
     df_lucas = pd.read_csv(LUCAS_FILE_PATH)
 except FileNotFoundError:
-    print(f"❌ Error: LUCAS file not found at {LUCAS_FILE_PATH}")
-    exit(1)
+    print(f"ERROR: LUCAS file not found at {LUCAS_FILE_PATH}")
+    sys.exit(1)
 
 print(f"   Loaded {len(df_lucas)} soil sample points.")
 
@@ -112,16 +133,16 @@ for filename in yield_files:
 print(f"3. Finding downloaded Sentinel-2 data...")
 safe_dir = find_safe_directory()
 if not safe_dir:
-    print(f"❌ Error: No .SAFE directory found in data/raw/")
-    print(f"   Make sure data_acquisition.py ran successfully first.")
-    exit(1)
+    print("ERROR: No .SAFE directory found in data/raw/")
+    print("   Make sure data_acquisition.py ran successfully first.")
+    sys.exit(1)
 
 print(f"   Found SAFE directory: {safe_dir}")
 
 jp2_files = find_jp2_files(safe_dir)
 if not jp2_files:
-    print(f"❌ Error: No .jp2 files found in {safe_dir}")
-    exit(1)
+    print(f"ERROR: No .jp2 files found in {safe_dir}")
+    sys.exit(1)
 
 print(f"   Found {len(jp2_files)} JP2 files")
 
@@ -197,40 +218,14 @@ df_lucas = pd.concat([df_lucas, band_df], axis=1)
 # --- 6. Calculate Vegetation Indices from Center Pixel ---
 print("5. Calculating Vegetation Indices from center pixels...")
 
-# Use pixel 5 (index 4) as the center of the 3x3 grid
-center_suffix = '_5'
-
-# Calculate indices using vectorized operations (performance improvement)
-vi_data = {}
-
-try:
-    # NDVI: (B08 - B04) / (B08 + B04)
-    if f'B08{center_suffix}' in df_lucas.columns and f'B04{center_suffix}' in df_lucas.columns:
-        b08 = df_lucas[f'B08{center_suffix}']
-        b04 = df_lucas[f'B04{center_suffix}']
-        vi_data['NDVI'] = (b08 - b04) / (b08 + b04)
-        print("   ✅ Calculated NDVI")
-    
-    # NDRE: (B08 - B05) / (B08 + B05)  
-    if f'B08{center_suffix}' in df_lucas.columns and f'B05{center_suffix}' in df_lucas.columns:
-        b08 = df_lucas[f'B08{center_suffix}']
-        b05 = df_lucas[f'B05{center_suffix}']
-        vi_data['NDRE'] = (b08 - b05) / (b08 + b05)
-        print("   ✅ Calculated NDRE")
-    
-    # GNDVI: (B08 - B03) / (B08 + B03)
-    if f'B08{center_suffix}' in df_lucas.columns and f'B03{center_suffix}' in df_lucas.columns:
-        b08 = df_lucas[f'B08{center_suffix}']
-        b03 = df_lucas[f'B03{center_suffix}']
-        vi_data['GNDVI'] = (b08 - b03) / (b08 + b03)
-        print("   ✅ Calculated GNDVI")
-        
-except Exception as e:
-    print(f"   ⚠️  Error calculating vegetation indices: {e}")
-
-# Add all VI data at once
-vi_df = pd.DataFrame(vi_data)
-df_lucas = pd.concat([df_lucas, vi_df], axis=1)
+# Pixel 5 (index 4) is the center of the 3x3 grid
+vi_data = compute_vegetation_indices(df_lucas, center_suffix='_5')
+if vi_data:
+    vi_df = pd.DataFrame(vi_data, index=df_lucas.index)
+    df_lucas = pd.concat([df_lucas, vi_df], axis=1)
+    print(f"   Calculated: {list(vi_data.keys())}")
+else:
+    print("   WARNING: Center-pixel band columns not found — skipping VI calculation.")
 
 # Replace inf/-inf values with NaN
 df_lucas.replace([np.inf, -np.inf], np.nan, inplace=True)

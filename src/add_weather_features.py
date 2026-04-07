@@ -1,31 +1,54 @@
-# Save this file as: src/add_weather_features.py
+"""Add weather and seasonal features to the raster-enriched dataset.
+
+When the Open-Meteo archive API is unavailable for a location, the script
+falls back to a deterministic synthetic estimate calibrated to the Philippine
+tropical highland climate (Benguet province, ~1300-2400 m a.s.l.).
+
+Rows filled synthetically are flagged with ``weather_is_synthetic = True``
+in the output CSV so downstream consumers can filter or weight them
+appropriately.
+
+Philippine climate reference:
+  - Wet season:  June – October  (habagat / SW monsoon)
+  - Dry season:  November – May  (amihan / NE monsoon)
+"""
 
 import os
-import pandas as pd
+import sys
+
 import numpy as np
+import pandas as pd
 import requests
 import time
-from datetime import datetime
 
 # --- 1. Configuration ---
-INPUT_CSV_PATH = 'data/processed/LUCAS_with_Raster_Features.csv'
+INPUT_CSV_PATH  = 'data/processed/LUCAS_with_Raster_Features.csv'
 OUTPUT_CSV_PATH = 'data/processed/LUCAS_with_All_Features.csv'
 
-# Define weather variables to fetch - USING CORRECT NAMES
+# Names exactly as returned by the Open-Meteo archive daily endpoint
 WEATHER_VARIABLES = [
-    "temperature_2m_mean", 
-    "relative_humidity_2m_mean", 
-    "dew_point_2m_mean", 
-    "precipitation_sum"
+    "temperature_2m_mean",
+    "relative_humidity_2m_mean",
+    "dew_point_2m_mean",
+    "precipitation_sum",
 ]
+
+# Mapping: API variable name → output column name
+_COL_MAP = {
+    "temperature_2m_mean":        "temperature_2m",
+    "relative_humidity_2m_mean":  "relative_humidity_2m",
+    "dew_point_2m_mean":          "dew_point_2m",
+    "precipitation_sum":          "precipitation",
+}
+WEATHER_COLS = list(_COL_MAP.values())
 
 # --- 2. Load Data ---
 print(f"1. Loading data from {INPUT_CSV_PATH}...")
 try:
     df = pd.read_csv(INPUT_CSV_PATH)
 except FileNotFoundError:
-    print(f"❌ Error: {INPUT_CSV_PATH} not found. Run `add_raster_features.py` first.")
-    exit(1)
+    print(f"ERROR: {INPUT_CSV_PATH} not found. Run `add_raster_features.py` first.")
+    sys.exit(1)
 
 print(f"   Loaded {len(df)} samples")
 
@@ -34,188 +57,165 @@ print("2. Checking available date columns...")
 date_columns = [col for col in df.columns if 'DATE' in col.upper() or 'SURVEY' in col.upper()]
 print(f"   Available date-related columns: {date_columns}")
 
-# Use the first available date column, or fall back to a default date
 if date_columns:
     date_column = date_columns[0]
     print(f"   Using date column: {date_column}")
-    
-    # Try different date formats
-    try:
-        df['SURVEY_DATE_dt'] = pd.to_datetime(df[date_column], format='%d/%m/%Y')
-    except:
+    parsed = False
+    for fmt in ('%d/%m/%Y', None):  # try explicit format first, then auto-detect
         try:
-            df['SURVEY_DATE_dt'] = pd.to_datetime(df[date_column])
-        except:
-            print(f"   ⚠️  Could not parse dates from {date_column}, using default date")
-            df['SURVEY_DATE_dt'] = pd.to_datetime('2018-05-15')  # Default spring date
+            df['SURVEY_DATE_dt'] = (
+                pd.to_datetime(df[date_column], format=fmt)
+                if fmt else pd.to_datetime(df[date_column])
+            )
+            parsed = True
+            break
+        except Exception:
+            continue
+    if not parsed:
+        print(f"   WARNING: Could not parse dates from '{date_column}'. "
+              f"Falling back to 2023-05-15 — all weather data will be synthetic.")
+        df['SURVEY_DATE_dt'] = pd.to_datetime('2023-05-15')
 else:
-    print("   ⚠️  No date columns found, using default spring sampling date")
-    df['SURVEY_DATE_dt'] = pd.to_datetime('2018-05-15')  # Default spring date
+    print("   WARNING: No date columns found. "
+          "Falling back to 2023-05-15 — all weather data will be synthetic.")
+    df['SURVEY_DATE_dt'] = pd.to_datetime('2023-05-15')
 
-# --- 4. Add Weather Features ---
-print(f"3. Adding weather features...")
+# --- 4. Initialise weather columns ---
+for col in WEATHER_COLS:
+    df[col] = np.nan
 
-# Initialize weather columns with NaN
-for var in WEATHER_VARIABLES:
-    # Use simpler column names
-    simple_name = var.replace('_mean', '').replace('_sum', '')
-    df[simple_name] = np.nan
+# Track which rows used synthetic (fallback) data
+df['weather_is_synthetic'] = False
 
-# Simple function to fetch weather data using direct HTTP requests
+
 def fetch_weather_data(lat, lon, date_str):
-    """
-    Fetch weather data using direct HTTP request to avoid library issues
-    """
+    """Return a {api_var: value} dict from Open-Meteo, or None on failure."""
     url = "https://archive-api.open-meteo.com/v1/archive"
     params = {
-        "latitude": lat,
-        "longitude": lon,
+        "latitude":   lat,
+        "longitude":  lon,
         "start_date": date_str,
-        "end_date": date_str,
-        "daily": "temperature_2m_mean,relative_humidity_2m_mean,dew_point_2m_mean,precipitation_sum",
-        "timezone": "auto"
+        "end_date":   date_str,
+        "daily":      ",".join(WEATHER_VARIABLES),
+        "timezone":   "auto",
     }
-    
     try:
         response = requests.get(url, params=params, timeout=10)
         if response.status_code == 200:
-            data = response.json()
-            if 'daily' in data:
-                daily_data = data['daily']
-                # Extract the first day's data
-                weather_values = {}
-                for var in WEATHER_VARIABLES:
-                    if var in daily_data and len(daily_data[var]) > 0:
-                        weather_values[var] = daily_data[var][0]
-                    else:
-                        weather_values[var] = np.nan
-                return weather_values
-        else:
-            print(f"      API returned status {response.status_code}")
-    except Exception as e:
-        print(f"      Request failed: {e}")
-    
+            daily = response.json().get("daily", {})
+            return {
+                var: (daily[var][0] if var in daily and daily[var] else np.nan)
+                for var in WEATHER_VARIABLES
+            }
+        print(f"      API returned status {response.status_code}")
+    except Exception as exc:
+        print(f"      Request failed: {exc}")
     return None
 
-# Group by unique combinations of lat, lon, and date to minimize API calls
+
+def _seasonal_weather(month, rng):
+    """Return synthetic weather dict calibrated to Philippine tropical highlands.
+
+    Benguet province (~1300-2400 m a.s.l.):
+    - Wet season  (Jun-Oct): cool, cloudy, heavy monsoon rainfall
+    - Dry season  (Nov-May): warmer, sunnier, low rainfall
+    """
+    if month in (6, 7, 8, 9, 10):  # Wet season — habagat / SW monsoon
+        temp_base      = 18.0
+        precip_base    = 12.0
+        humidity_range = (75, 95)
+    else:                            # Dry season — amihan / NE monsoon
+        temp_base      = 22.0
+        precip_base    = 2.5
+        humidity_range = (55, 80)
+
+    temp = float(temp_base + rng.normal(0, 2))
+    return {
+        "temperature_2m":       temp,
+        "precipitation":        float(max(0, rng.exponential(precip_base))),
+        "relative_humidity_2m": float(rng.uniform(*humidity_range)),
+        "dew_point_2m":         float(temp - rng.exponential(3)),
+    }
+
+
+# --- 5. Fetch / generate weather per unique (lat, lon, date) ---
+print("3. Adding weather features...")
 unique_coords_dates = df[['TH_LAT', 'TH_LONG', 'SURVEY_DATE_dt']].drop_duplicates()
 print(f"   Fetching weather for {len(unique_coords_dates)} unique locations...")
 
 success_count = 0
-fail_count = 0
+fail_count    = 0
 
-for idx, (lat, lon, date_obj) in unique_coords_dates.iterrows():
-    # Format date for API (YYYY-MM-DD)
+for _, row in unique_coords_dates.iterrows():
+    lat, lon, date_obj = row['TH_LAT'], row['TH_LONG'], row['SURVEY_DATE_dt']
     date_str = date_obj.strftime('%Y-%m-%d')
-    
-    print(f"   Fetching: {lat:.4f}, {lon:.4f}, {date_str}...")
-    
-    # Fetch weather data
+    mask = (df['TH_LAT'] == lat) & (df['TH_LONG'] == lon) & (df['SURVEY_DATE_dt'] == date_obj)
+
     weather_data = fetch_weather_data(lat, lon, date_str)
-    
+
     if weather_data:
-        # Find all rows with this lat/lon/date and update them
-        mask = (df['TH_LAT'] == lat) & (df['TH_LONG'] == lon) & (df['SURVEY_DATE_dt'] == date_obj)
-        
-        for var in WEATHER_VARIABLES:
-            simple_name = var.replace('_mean', '').replace('_sum', '')
-            df.loc[mask, simple_name] = weather_data[var]
-        
+        for api_var, col in _COL_MAP.items():
+            df.loc[mask, col] = weather_data[api_var]
         success_count += 1
     else:
-        print(f"   ⚠️  Could not fetch weather for {lat:.4f}, {lon:.4f}, {date_str}")
+        print(f"   WARNING: API failed for {lat:.4f}, {lon:.4f}, {date_str} — using synthetic estimate.")
+        rng = np.random.default_rng(seed=int(abs(lat * 1000 + lon * 100)))
+        synth = _seasonal_weather(date_obj.month, rng)
+        for col, val in synth.items():
+            df.loc[mask, col] = val
+        df.loc[mask, 'weather_is_synthetic'] = True
         fail_count += 1
-        
-        # Use simulated data for failed points
-        mask = (df['TH_LAT'] == lat) & (df['TH_LONG'] == lon) & (df['SURVEY_DATE_dt'] == date_obj)
-        np.random.seed(int(lat * 1000 + lon * 100))  # Seed based on location for consistency
-        
-        # Simulate realistic weather for Philippine tropical highlands (Benguet, ~1300-2400m)
-        month = date_obj.month
-        # Philippine seasons: dry season Nov-May, wet season Jun-Oct
-        if month in [6, 7, 8, 9, 10]:  # Wet season (habagat / SW monsoon)
-            temp_base = 18.0  # Cooler and cloudier during wet season
-            precip_base = 12.0  # Heavy monsoon rainfall
-            humidity_low, humidity_high = 75, 95
-        else:  # Dry season Nov-May (amihan / NE monsoon)
-            temp_base = 22.0  # Warmer and sunnier during dry season
-            precip_base = 2.5  # Low rainfall
-            humidity_low, humidity_high = 55, 80
-        
-        df.loc[mask, 'temperature_2m'] = temp_base + np.random.normal(0, 2, mask.sum())
-        df.loc[mask, 'precipitation'] = np.maximum(0, np.random.exponential(precip_base, mask.sum()))
-        df.loc[mask, 'relative_humidity_2m'] = np.random.uniform(humidity_low, humidity_high, mask.sum())
-        df.loc[mask, 'dew_point_2m'] = df.loc[mask, 'temperature_2m'] - np.random.exponential(3, mask.sum())
-    
-    # Progress reporting
-    if (success_count + fail_count) % 50 == 0:
-        print(f"   ...processed {success_count + fail_count}/{len(unique_coords_dates)} locations")
-    
-    # Rate limiting - be nice to the API
-    time.sleep(0.1)
 
-print(f"   Weather data: {success_count} successful, {fail_count} failed")
+    total = success_count + fail_count
+    if total % 50 == 0:
+        print(f"   ...processed {total}/{len(unique_coords_dates)} locations")
 
-# Fill any remaining NaN values with simulated data
-missing_mask = df[['temperature_2m', 'precipitation', 'relative_humidity_2m', 'dew_point_2m']].isna().any(axis=1)
-if missing_mask.any():
-    print(f"   Adding simulated weather for {missing_mask.sum()} remaining missing points")
-    
-    # More realistic simulation based on location and date
-    for idx in df[missing_mask].index:
-        lat = df.loc[idx, 'TH_LAT']
-        lon = df.loc[idx, 'TH_LONG']
+    time.sleep(0.1)  # Rate-limit: be polite to the free API
+
+print(f"   Weather data: {success_count} successful, {fail_count} used synthetic fallback")
+if fail_count:
+    print(f"   NOTE: {fail_count} location(s) used synthetic weather. "
+          f"The column 'weather_is_synthetic' is set to True for those rows.")
+
+# --- 6. Fill any remaining NaN values (e.g., parsing edge-cases) ---
+still_missing = df[WEATHER_COLS].isna().any(axis=1)
+if still_missing.any():
+    n_missing = int(still_missing.sum())
+    print(f"   WARNING: {n_missing} row(s) still missing weather after fetch loop — applying synthetic fallback.")
+    for idx in df[still_missing].index:
+        lat      = df.loc[idx, 'TH_LAT']
         date_obj = df.loc[idx, 'SURVEY_DATE_dt']
-        month = date_obj.month
-        
-        # Seasonal adjustments for Philippine tropical highlands (Benguet, ~1300-2400m)
-        # Philippine seasons: dry season Nov-May, wet season Jun-Oct
-        if month in [6, 7, 8, 9, 10]:  # Wet season (habagat / SW monsoon)
-            temp_base = 18.0  # Cooler and cloudier during wet season
-            precip_base = 12.0  # Heavy monsoon rainfall
-            humidity_low, humidity_high = 75, 95
-        else:  # Dry season Nov-May (amihan / NE monsoon)
-            temp_base = 22.0  # Warmer and sunnier during dry season
-            precip_base = 2.5  # Low rainfall
-            humidity_low, humidity_high = 55, 80
-        
-        np.random.seed(int(lat * 1000 + lon * 100 + month))
-        
-        df.loc[idx, 'temperature_2m'] = temp_base + np.random.normal(0, 2)
-        df.loc[idx, 'precipitation'] = max(0, np.random.exponential(precip_base))
-        df.loc[idx, 'relative_humidity_2m'] = np.random.uniform(humidity_low, humidity_high)
-        df.loc[idx, 'dew_point_2m'] = df.loc[idx, 'temperature_2m'] - np.random.exponential(3)
+        rng      = np.random.default_rng(seed=int(abs(lat * 1000 + date_obj.month)))
+        synth    = _seasonal_weather(date_obj.month, rng)
+        for col, val in synth.items():
+            if pd.isna(df.loc[idx, col]):
+                df.loc[idx, col] = val
+        df.loc[idx, 'weather_is_synthetic'] = True
 
-# --- 5. Add Seasonal Features ---
+# --- 7. Add Seasonal Features ---
 print("4. Adding seasonal features...")
-
-# Extract month from sampling date
 df['month'] = df['SURVEY_DATE_dt'].dt.month
 
-# Add Philippine seasonal indicators (dry season Nov-May, wet season Jun-Oct)
+# Philippine seasons: dry season Nov-May, wet season Jun-Oct
 seasons = {
-    'wet_season': [6, 7, 8, 9, 10],   # Habagat / SW monsoon
+    'wet_season': [6, 7, 8, 9, 10],      # Habagat / SW monsoon
     'dry_season': [11, 12, 1, 2, 3, 4, 5],  # Amihan / NE monsoon
 }
-
 for season, months in seasons.items():
     df[f'is_{season}'] = df['month'].isin(months).astype(int)
+print("   Seasonal features added.")
 
-print("   ✅ Added seasonal features")
-
-# --- 6. Save Final Dataset ---
+# --- 8. Save ---
 print(f"5. Saving final dataset to {OUTPUT_CSV_PATH}...")
-# Drop the temporary datetime and month columns
 df.drop(columns=['SURVEY_DATE_dt', 'month'], inplace=True)
-os.makedirs('data/processed', exist_ok=True)
+os.makedirs(os.path.dirname(OUTPUT_CSV_PATH), exist_ok=True)
 df.to_csv(OUTPUT_CSV_PATH, index=False)
 
-# Print final summary
-print(f"\n✅ Success! Final dataset with all features saved to {OUTPUT_CSV_PATH}")
-print(f"   Final dataset shape: {df.shape}")
-print(f"   Weather statistics:")
-print(f"   - Temperature: {df['temperature_2m'].mean():.1f}°C ± {df['temperature_2m'].std():.1f}°C")
-print(f"   - Precipitation: {df['precipitation'].mean():.1f}mm ± {df['precipitation'].std():.1f}mm")
-print(f"   - Humidity: {df['relative_humidity_2m'].mean():.1f}% ± {df['relative_humidity_2m'].std():.1f}%")
-print(f"   - Dew Point: {df['dew_point_2m'].mean():.1f}°C ± {df['dew_point_2m'].std():.1f}°C")
-print("   Next step: Run `src/train_model.py`")
+synth_pct = df['weather_is_synthetic'].mean() * 100
+print(f"\nSuccess! Final dataset saved to {OUTPUT_CSV_PATH}")
+print(f"   Shape: {df.shape}")
+print(f"   Synthetic weather rows: {df['weather_is_synthetic'].sum()} ({synth_pct:.1f}%)")
+print(f"   Temperature:  {df['temperature_2m'].mean():.1f} +/- {df['temperature_2m'].std():.1f} C")
+print(f"   Precipitation:{df['precipitation'].mean():.1f} +/- {df['precipitation'].std():.1f} mm")
+print(f"   Humidity:     {df['relative_humidity_2m'].mean():.1f} +/- {df['relative_humidity_2m'].std():.1f} %")
+print("   Next step: Run `src/train_ordinal.py`")

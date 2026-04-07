@@ -68,15 +68,18 @@ def main() -> int:
         print(token_data)
         return 0
 
-    print("Token generated successfully.")
-    print(f"token_type: {token_type}")
-    print(f"expires_in: {expires_in} seconds")
-    print()
-    print("ACCESS_TOKEN:")
+    # Print the token to stdout so callers can pipe/capture it cleanly.
+    # All surrounding informational text goes to stderr to avoid polluting
+    # captured output and to reduce accidental token exposure in CI logs.
+    import sys as _sys
+    _err = _sys.stderr
+    print("Token generated successfully.", file=_err)
+    print(f"token_type: {token_type}", file=_err)
+    print(f"expires_in: {expires_in} seconds", file=_err)
+    print("WARNING: treat the token below as a secret — do not log or share it.", file=_err)
+    print(f"Authorization: {token_type} <token>", file=_err)
+    # Only the raw token goes to stdout for easy capture: $(get_cdse_token ...)
     print(access_token)
-    print()
-    print("Use in requests header:")
-    print("Authorization: Bearer <ACCESS_TOKEN>")
     return 0
 
 

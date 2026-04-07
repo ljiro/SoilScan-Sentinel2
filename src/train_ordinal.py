@@ -34,6 +34,34 @@ CLASS_NAMES = ["Low", "Medium", "High"]
 _EPS = 1e-6
 
 
+class _OrdinalXGBWrapper:
+    """Thin wrapper that makes XGBRegressor behave like a classifier for
+    ordinal integer labels.
+
+    Using ``reg:squarederror`` preserves the ordinal structure of pH
+    (11-class CPR scale) by treating adjacent classes as numerically close,
+    unlike ``multi:softprob`` which treats all pairs as equally distant.
+
+    predict() rounds continuous outputs and clips them to [0, n_classes-1].
+    """
+
+    def __init__(self, n_classes: int, **kwargs):
+        self._n = n_classes
+        self._model = xgb.XGBRegressor(objective="reg:squarederror", **kwargs)
+
+    def fit(self, X, y, sample_weight=None):
+        self._model.fit(X, y, sample_weight=sample_weight)
+        return self
+
+    def predict(self, X):
+        raw = self._model.predict(X)
+        return np.clip(np.round(raw).astype(int), 0, self._n - 1)
+
+    @property
+    def feature_importances_(self):
+        return self._model.feature_importances_
+
+
 def _add_spectral_indices(df):
     """Compute physically meaningful spectral indices from Sentinel-2 bands.
 
@@ -280,17 +308,28 @@ def plot_confusion_matrix(cm, target_col, out_dir, class_names=None):
     print(f"  Confusion matrix plot saved: {path}")
 
 
-def _build_models(n_classes):
-    """Return {name: model} for XGBoost, Random Forest, and SVM."""
-    return {
-        "XGBoost": xgb.XGBClassifier(
+def _build_models(n_classes: int, is_ph: bool = False) -> dict:
+    """Return {name: model} for XGBoost, Random Forest, and SVM.
+
+    For pH (``is_ph=True``) XGBoost uses an ordinal regression objective
+    (``reg:squarederror`` with rounded predictions) rather than unordered
+    multiclass softmax, which better respects the 11-step CPR scale.
+    For N/P/K (3 ordered classes) multiclass softmax is used as before.
+    """
+    _xgb_shared = dict(
+        max_depth=6, min_child_weight=3, n_estimators=500, learning_rate=0.03,
+        subsample=0.8, colsample_bytree=0.7, colsample_bylevel=0.7,
+        reg_alpha=0.1, reg_lambda=1.5, gamma=0.1, random_state=42, n_jobs=-1,
+    )
+    if is_ph:
+        xgb_model = _OrdinalXGBWrapper(n_classes, eval_metric="rmse", **_xgb_shared)
+    else:
+        xgb_model = xgb.XGBClassifier(
             objective="multi:softprob", num_class=n_classes,
-            eval_metric="mlogloss", max_depth=6, min_child_weight=3,
-            n_estimators=500, learning_rate=0.03, subsample=0.8,
-            colsample_bytree=0.7, colsample_bylevel=0.7,
-            reg_alpha=0.1, reg_lambda=1.5, gamma=0.1,
-            random_state=42, n_jobs=-1,
-        ),
+            eval_metric="mlogloss", **_xgb_shared,
+        )
+    return {
+        "XGBoost": xgb_model,
         "RandomForest": RandomForestClassifier(
             n_estimators=500, max_depth=None, min_samples_leaf=2,
             max_features="sqrt", class_weight="balanced",
@@ -468,7 +507,7 @@ def train_and_evaluate(df, X, groups, target_col, preprocessor,
         print(f"  Note: {n_groups} unique groups — using {n_splits}-fold.")
     gkf = GroupKFold(n_splits=n_splits)
 
-    models           = _build_models(n_classes)
+    models           = _build_models(n_classes, is_ph=is_ph)
     results_by_model = {}
     cms              = {}
     importances_by_model = {}   # model_name -> (feature_names, importances_array)

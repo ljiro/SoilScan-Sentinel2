@@ -170,7 +170,7 @@ def _parallel_download(url, zip_path, total_bytes, desc, auth_headers, num_chunk
         s = requests.Session()
         s.headers.update(auth_headers)
         r = s.get(url, headers={"Range": f"bytes={byte_start}-{byte_end}"},
-                  stream=True, timeout=(60, None))
+                  stream=True, timeout=(60, 300))
         if r.status_code != 206:
             detail = (r.text or "")[:200].replace("\n", " ").strip()
             r.close()
