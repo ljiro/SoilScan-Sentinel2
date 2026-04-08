@@ -33,8 +33,8 @@ from sklearn.model_selection import train_test_split
 from utils import compute_vegetation_indices
 
 # --- 1. Configuration ---
-FINAL_DATASET_PATH = 'data/processed/LUCAS_with_All_Features.csv'
-MODEL_TARGET       = 'N'   # Choose target: 'N', 'P', or 'K'
+FINAL_DATASET_PATH = 'data/external/final_merged_data_cleaned.csv'
+MODEL_TARGET       = 'n'   # Choose target: 'n', 'p', or 'k'
 MODEL_OUTPUT_DIR   = 'outputs/models'
 
 # --- 2. Load the Final Merged Data ---

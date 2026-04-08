@@ -33,7 +33,7 @@ from rasterio.windows import Window
 from utils import compute_vegetation_indices
 
 # --- 1. Configuration ---
-LUCAS_FILE_PATH = 'data/external/LUCAS SOIL Modified.csv'
+LUCAS_FILE_PATH = 'data/external/final_merged_data_cleaned.csv'
 YIELD_DIR = 'data/raw/fao_gaez/'
 OUTPUT_CSV_PATH = 'data/processed/LUCAS_with_Raster_Features.csv'
 
@@ -107,7 +107,7 @@ print(f"   Loaded {len(df_lucas)} soil sample points.")
 # Convert to GeoDataFrame
 gdf_lucas_wgs84 = gpd.GeoDataFrame(
     df_lucas,
-    geometry=gpd.points_from_xy(df_lucas['TH_LONG'], df_lucas['TH_LAT']),
+    geometry=gpd.points_from_xy(df_lucas['longitude'], df_lucas['latitude']),
     crs='EPSG:4326'
 )
 coords_wgs84 = [(pt.x, pt.y) for pt in gdf_lucas_wgs84.geometry]

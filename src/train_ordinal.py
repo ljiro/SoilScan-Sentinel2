@@ -103,20 +103,19 @@ def load_and_prepare_data(csv_path):
     """Load unified dataset, engineer spectral indices, prepare features and targets."""
     df = pd.read_csv(csv_path)
 
-    stk_mapping = {"Low": 0, "Medium": 1, "High": 2}
-    # N / P / K: ordinal 3-class (Low=0, Medium=1, High=2)
+    # N / P / K: ordinal 3-class already encoded as 0=Low, 1=Medium, 2=High
     # ph: ordinal 11-class from rapid soil test kit CPR scale
     #   (4.0, 4.4, 4.8, 5.2, 5.4, 5.8, 6.0, 6.4, 6.8, 7.2, 7.6)
     PH_VALUES  = [4.0, 4.4, 4.8, 5.2, 5.4, 5.8, 6.0, 6.4, 6.8, 7.2, 7.6]
     ph_mapping = {v: i for i, v in enumerate(PH_VALUES)}
 
-    npk_targets = ["nitrogen", "phosphorus", "potassium"]
+    npk_targets = ["n", "p", "k"]
     ph_targets  = ["ph"]
     targets     = npk_targets + ph_targets
 
     for t in npk_targets:
         if t in df.columns:
-            df[t] = df[t].map(stk_mapping)
+            df[t] = pd.to_numeric(df[t], errors="coerce")
     for t in ph_targets:
         if t in df.columns:
             df[t] = pd.to_numeric(df[t], errors="coerce").map(ph_mapping)
@@ -564,7 +563,7 @@ if __name__ == "__main__":
         description="Train XGBoost / Random Forest / SVM for STK + pH ordinal classification."
     )
     parser.add_argument("data_path", nargs="?",
-                        default="data/processed/final_dataset_with_stk.csv")
+                        default="data/external/final_merged_data_cleaned.csv")
     parser.add_argument("--figures-dir", default="outputs/figures")
     parser.add_argument("--output-dir",  default="outputs")
     args = parser.parse_args()

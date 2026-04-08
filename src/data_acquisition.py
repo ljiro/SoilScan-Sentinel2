@@ -40,7 +40,7 @@ AUTH_URL          = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/p
 CATALOG_URL       = "https://catalogue.dataspace.copernicus.eu/odata/v1/Products"
 DOWNLOAD_URL_TMPL = "https://zipper.dataspace.copernicus.eu/odata/v1/Products({})/$value"
 
-LUCAS_FILE_PATH = 'data/external/LUCAS SOIL Modified.csv'
+LUCAS_FILE_PATH = 'data/external/final_merged_data_cleaned.csv'
 DOWNLOAD_DIR    = 'data/raw/'
 
 DATE_RANGE  = (date(2018, 5, 1), date(2018, 8, 31))
@@ -87,10 +87,10 @@ except FileNotFoundError:
     sys.exit(1)
 
 # 0.01° buffer around the point cloud so the tile covers all samples
-min_lon = df_lucas['TH_LONG'].min() - 0.01
-max_lon = df_lucas['TH_LONG'].max() + 0.01
-min_lat = df_lucas['TH_LAT'].min()  - 0.01
-max_lat = df_lucas['TH_LAT'].max()  + 0.01
+min_lon = df_lucas['longitude'].min() - 0.01
+max_lon = df_lucas['longitude'].max() + 0.01
+min_lat = df_lucas['latitude'].min()  - 0.01
+max_lat = df_lucas['latitude'].max()  + 0.01
 
 AOI_WKT = (
     f'POLYGON(({min_lon} {min_lat}, {max_lon} {min_lat}, '

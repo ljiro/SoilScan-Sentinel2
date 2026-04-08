@@ -54,19 +54,20 @@ print(f"   Loaded {len(df)} samples")
 
 # --- 3. Handle Dates ---
 print("2. Checking available date columns...")
-date_columns = [col for col in df.columns if 'DATE' in col.upper() or 'SURVEY' in col.upper()]
-print(f"   Available date-related columns: {date_columns}")
+# Prefer capture_datetime (AgriCapture), then fall back to any DATE/SURVEY column
+_date_candidates = (
+    ["capture_datetime"]
+    + [col for col in df.columns
+       if 'DATE' in col.upper() or 'SURVEY' in col.upper()]
+)
+date_column = next((c for c in _date_candidates if c in df.columns), None)
+print(f"   Using date column: {date_column}")
 
-if date_columns:
-    date_column = date_columns[0]
-    print(f"   Using date column: {date_column}")
+if date_column:
     parsed = False
-    for fmt in ('%d/%m/%Y', None):  # try explicit format first, then auto-detect
+    for fmt in (None, '%d/%m/%Y'):  # ISO first (AgriCapture), then explicit
         try:
-            df['SURVEY_DATE_dt'] = (
-                pd.to_datetime(df[date_column], format=fmt)
-                if fmt else pd.to_datetime(df[date_column])
-            )
+            df['SURVEY_DATE_dt'] = pd.to_datetime(df[date_column], format=fmt)
             parsed = True
             break
         except Exception:
@@ -140,16 +141,16 @@ def _seasonal_weather(month, rng):
 
 # --- 5. Fetch / generate weather per unique (lat, lon, date) ---
 print("3. Adding weather features...")
-unique_coords_dates = df[['TH_LAT', 'TH_LONG', 'SURVEY_DATE_dt']].drop_duplicates()
+unique_coords_dates = df[['latitude', 'longitude', 'SURVEY_DATE_dt']].drop_duplicates()
 print(f"   Fetching weather for {len(unique_coords_dates)} unique locations...")
 
 success_count = 0
 fail_count    = 0
 
 for _, row in unique_coords_dates.iterrows():
-    lat, lon, date_obj = row['TH_LAT'], row['TH_LONG'], row['SURVEY_DATE_dt']
+    lat, lon, date_obj = row['latitude'], row['longitude'], row['SURVEY_DATE_dt']
     date_str = date_obj.strftime('%Y-%m-%d')
-    mask = (df['TH_LAT'] == lat) & (df['TH_LONG'] == lon) & (df['SURVEY_DATE_dt'] == date_obj)
+    mask = (df['latitude'] == lat) & (df['longitude'] == lon) & (df['SURVEY_DATE_dt'] == date_obj)
 
     weather_data = fetch_weather_data(lat, lon, date_str)
 
@@ -183,7 +184,7 @@ if still_missing.any():
     n_missing = int(still_missing.sum())
     print(f"   WARNING: {n_missing} row(s) still missing weather after fetch loop — applying synthetic fallback.")
     for idx in df[still_missing].index:
-        lat      = df.loc[idx, 'TH_LAT']
+        lat      = df.loc[idx, 'latitude']
         date_obj = df.loc[idx, 'SURVEY_DATE_dt']
         rng      = np.random.default_rng(seed=int(abs(lat * 1000 + date_obj.month)))
         synth    = _seasonal_weather(date_obj.month, rng)
