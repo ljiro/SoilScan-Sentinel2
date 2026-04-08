@@ -780,7 +780,7 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
 if __name__ == "__main__":
     import argparse
     p = argparse.ArgumentParser(description="Augment field CSV with Sentinel-2 bands (Copernicus).")
-    p.add_argument("input_csv", nargs="?", default="data/external/combined_field_data.csv")
+    p.add_argument("input_csv", nargs="?", default="data/external/final_merged_data_cleaned.csv")
     p.add_argument("-o", "--output", default="data/processed/field_data_with_bands.csv")
     p.add_argument(
         "--max-products",

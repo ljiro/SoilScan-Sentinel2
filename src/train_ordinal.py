@@ -563,7 +563,7 @@ if __name__ == "__main__":
         description="Train XGBoost / Random Forest / SVM for STK + pH ordinal classification."
     )
     parser.add_argument("data_path", nargs="?",
-                        default="data/external/final_merged_data_cleaned.csv")
+                        default="data/processed/field_data_with_bands.csv")
     parser.add_argument("--figures-dir", default="outputs/figures")
     parser.add_argument("--output-dir",  default="outputs")
     args = parser.parse_args()
