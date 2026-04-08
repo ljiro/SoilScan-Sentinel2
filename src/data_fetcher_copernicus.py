@@ -641,6 +641,12 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
     df["capture_datetime"] = pd.to_datetime(df["capture_datetime"])
     df["_capture_date"] = df["capture_datetime"].dt.date
 
+    # Drop rows with missing coordinates — they produce NaN WKT and 400 errors
+    bad = df["latitude"].isna() | df["longitude"].isna()
+    if bad.any():
+        print(f"  WARNING: Dropping {bad.sum()} row(s) with missing lat/lon.")
+        df = df[~bad].copy()
+
     # Unique (spatial cell, date) to minimize downloads
     df["_lat_cell"] = (df["latitude"] // SPATIAL_GRID_DEG) * SPATIAL_GRID_DEG
     df["_lon_cell"] = (df["longitude"] // SPATIAL_GRID_DEG) * SPATIAL_GRID_DEG
