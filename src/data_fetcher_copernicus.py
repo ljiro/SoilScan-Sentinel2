@@ -688,25 +688,28 @@ def _append_rows_safe(df_chunk, output_path, retries=6, delay=5):
 
 
 def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
-                                  num_chunks=4):
+                                  num_chunks=4, all_pixels=False):
     """Load field CSV, download S2 products per (spatial cell, date), sample bands, save.
 
     Augmentation strategies applied:
       1. Multi-temporal compositing  — all tiles within ±DATE_TOLERANCE_DAYS are
-         downloaded and averaged per-pixel; per-band temporal std stored in *_std cols.
+         downloaded and averaged; per-band temporal std stored in *_std cols.
       2. Expanded date window        — DATE_TOLERANCE_DAYS = 45 (was 14).
-      3. Multi-season augmentation   — for each capture, also fetch tiles from the
-         opposite Philippine season (wet↔dry) and add as extra training rows.
-      4. 3×3 neighbourhood pixels   — each original GPS point yields 9 rows, one per
-         pixel in the 3×3 patch; labels are identical across the 9 rows.
+      3. Multi-season augmentation   — also fetches tiles from the opposite Philippine
+         season (wet↔dry) and adds them as extra training rows.
+      4. Centre pixel only (default) — one row per GPS point using the centre pixel
+         of the 3×3 patch (pixel index 4). Pass all_pixels=True / --all-pixels to
+         emit all 9 neighbourhood pixels as separate rows (not recommended with few
+         spatial groups — causes label redundancy across folds).
 
     Resume: tracks progress by _group_id so partial runs can be continued.
 
     Args:
-        csv_path:     Path to input field CSV.
-        output_path:  Where to save the augmented CSV (written incrementally).
+        csv_path:    Path to input field CSV.
+        output_path: Where to save the augmented CSV (written incrementally).
         max_products: Stop after this many spatial-cell groups (for quick tests).
-        num_chunks:   Parallel connections per ZIP download.
+        num_chunks:  Parallel connections per ZIP download.
+        all_pixels:  Emit all 9 neighbourhood pixels as rows (default: False).
     """
     df = pd.read_csv(csv_path)
     df["capture_datetime"] = pd.to_datetime(df["capture_datetime"])
@@ -757,9 +760,14 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
             all_cols  = base_cols + BAND_NAMES + BAND_STD_NAMES + ["_pixel_idx", "_aug_season", "_group_id"]
             pd.DataFrame(columns=all_cols).to_csv(output_path, index=False, quoting=1)
 
-    # ── Helper: composite tiles → 9 pixel rows ────────────────────────────────
+    # ── Helper: composite tiles → pixel rows ──────────────────────────────────
     def _emit_rows(group_rows, safe_dirs, group_id, aug_season):
-        """Sample 9 pixels from composited tiles; return list of row dicts."""
+        """Sample pixels from composited tiles; return list of row dicts.
+
+        Default: centre pixel only (pixel index 4 of the 3×3 patch).
+        With all_pixels=True: all 9 neighbourhood pixels as separate rows.
+        """
+        _CENTRE = 4   # index of centre pixel in flattened 3×3 patch
         rows_out = []
         for _, row in group_rows.iterrows():
             tile_pixels = []
@@ -777,7 +785,8 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
                          else np.zeros((9, len(BAND_NAMES)), dtype=np.float32))
 
             base = row.drop(labels=list(_meta_drop), errors="ignore")
-            for pix_idx in range(9):
+            pixel_indices = range(9) if all_pixels else [_CENTRE]
+            for pix_idx in pixel_indices:
                 rows_out.append({
                     **base.to_dict(),
                     **dict(zip(BAND_NAMES,     pixel_arr[pix_idx].tolist())),
@@ -876,9 +885,15 @@ if __name__ == "__main__":
         help="Number of parallel connections per download (default: 4). "
              "Try 8 for faster downloads. Use 1 to disable parallel mode.",
     )
+    p.add_argument(
+        "--all-pixels",
+        action="store_true",
+        help="Emit all 9 neighbourhood pixels as separate rows instead of centre only. "
+             "Not recommended with few spatial groups (causes label redundancy).",
+    )
     args = p.parse_args()
     if not os.path.isfile(args.input_csv):
         print(f"Input not found: {args.input_csv}")
         exit(1)
     augment_field_data_copernicus(args.input_csv, args.output, args.max_products,
-                                  num_chunks=args.chunks)
+                                  num_chunks=args.chunks, all_pixels=args.all_pixels)
