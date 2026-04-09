@@ -904,7 +904,7 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
                 opp_rows = _emit_rows(group_rows, opp_safe_dirs, aug_group_id, aug_season=True)
                 if opp_rows and output_path:
                     _append_rows_safe(pd.DataFrame(opp_rows), output_path)
-                        already_done_groups.add(aug_group_id)
+                already_done_groups.add(aug_group_id)
 
     if output_path and os.path.exists(output_path):
         final = pd.read_csv(output_path, on_bad_lines="skip")
