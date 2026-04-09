@@ -124,6 +124,9 @@ def load_and_prepare_data(csv_path):
         "B01", "B02", "B03", "B04", "B05", "B06",
         "B07", "B08", "B8A", "B09", "B11", "B12",
     ]
+    # Temporal std features — present when multi-tile compositing was used
+    spectral_std_features = [f"{b}_std" for b in spectral_features
+                             if f"{b}_std" in df.columns]
     microclimate_features = ["temperature_c", "humidity_percent", "altitude_m"]
     categorical_features  = ["crops"]
 
@@ -136,11 +139,16 @@ def load_and_prepare_data(csv_path):
     df.attrs["ph_targets"] = ph_targets
     df.attrs["ph_values"]  = PH_VALUES
 
-    all_numeric = spectral_features + microclimate_features + index_features
+    all_numeric = spectral_features + spectral_std_features + microclimate_features + index_features
     X = df[all_numeric + categorical_features]
 
-    # Group by location to prevent spatial leakage
-    groups = df["barangay"].fillna(df["municipality"])
+    # Group by location to prevent spatial leakage.
+    # If _group_id is present (augmented dataset), use it so that all 9 pixels
+    # from the same GPS point + season land in the same fold.
+    if "_group_id" in df.columns:
+        groups = df["_group_id"]
+    else:
+        groups = df["barangay"].fillna(df["municipality"])
 
     return (
         df,
@@ -343,7 +351,7 @@ def _build_models(n_classes: int, is_ph: bool = False) -> dict:
 
 
 def _run_one_model(model, model_name, X_valid, y_valid, groups_valid,
-                   preprocessor, gkf):
+                   preprocessor, gkf, use_smote=False):
     """Run GroupKFold for one model.
 
     Returns (y_true, y_pred, fold_metrics_dict, last_Xte, last_yte).
@@ -358,6 +366,15 @@ def _run_one_model(model, model_name, X_valid, y_valid, groups_valid,
         Xtr = preprocessor.fit_transform(X_valid.iloc[train_idx])
         Xte = preprocessor.transform(X_valid.iloc[test_idx])
         ytr, yte = y_valid.iloc[train_idx], y_valid.iloc[test_idx]
+
+        if use_smote:
+            try:
+                from imblearn.over_sampling import SMOTE
+                Xtr, ytr = SMOTE(random_state=42).fit_resample(Xtr, ytr)
+            except ImportError:
+                print("  WARNING: imbalanced-learn not installed — skipping SMOTE. "
+                      "Run: pip install imbalanced-learn")
+
         sw = compute_sample_weight("balanced", ytr)
 
         if model_name == "SVM":
@@ -481,7 +498,8 @@ def plot_model_comparison(results_by_model, target_col, figures_dir):
 
 
 def train_and_evaluate(df, X, groups, target_col, preprocessor,
-                       num_features, cat_features, figures_dir="outputs/figures"):
+                       num_features, cat_features, figures_dir="outputs/figures",
+                       use_smote=False):
     """
     Train XGBoost, Random Forest, and SVM with GroupKFold.
     Prints per-fold + pooled metrics for each model and saves comparison plots.
@@ -519,7 +537,8 @@ def train_and_evaluate(df, X, groups, target_col, preprocessor,
     for model_name, model in models.items():
         print(f"\n  Training {model_name}...")
         y_true, y_pred, folds, last_Xte, last_yte = _run_one_model(
-            model, model_name, X_valid, y_valid, groups_valid, preprocessor, gkf)
+            model, model_name, X_valid, y_valid, groups_valid, preprocessor, gkf,
+            use_smote=use_smote)
         metrics_dict, cm = _print_one_model(
             model_name, y_true, y_pred, folds,
             n_classes, class_names, is_ph)
@@ -570,6 +589,9 @@ if __name__ == "__main__":
                         default="data/processed/field_data_with_bands.csv")
     parser.add_argument("--figures-dir", default="outputs/figures")
     parser.add_argument("--output-dir",  default="outputs")
+    parser.add_argument("--smote", action="store_true",
+                        help="Apply SMOTE oversampling on minority classes per fold "
+                             "(requires: pip install imbalanced-learn).")
     args = parser.parse_args()
 
     if not os.path.isfile(args.data_path):
@@ -588,6 +610,7 @@ if __name__ == "__main__":
         _, metrics_list, imp_by_model = train_and_evaluate(
             df, X, groups, t, preprocessor,
             num_feat, cat_feat, figures_dir=args.figures_dir,
+            use_smote=args.smote,
         )
         all_results.extend(metrics_list)
         for model_name, (feat_names, imps) in imp_by_model.items():

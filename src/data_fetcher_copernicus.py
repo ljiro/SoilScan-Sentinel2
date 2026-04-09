@@ -32,9 +32,12 @@ CATALOG_URL = "https://catalogue.dataspace.copernicus.eu/odata/v1/Products"
 # Zipper endpoint accepts Bearer token for download (see CDSE forum / Compressed Product Download docs)
 DOWNLOAD_URL_TEMPLATE = "https://zipper.dataspace.copernicus.eu/odata/v1/Products({})/$value"
 FIELD_DOWNLOAD_DIR = "data/raw/field_products"
-BAND_NAMES = ["B01", "B02", "B03", "B04", "B05", "B06", "B07", "B08", "B8A", "B09", "B11", "B12"]
-# Days before/after capture date to search for imagery
-DATE_TOLERANCE_DAYS = 14
+BAND_NAMES     = ["B01", "B02", "B03", "B04", "B05", "B06", "B07", "B08", "B8A", "B09", "B11", "B12"]
+BAND_STD_NAMES = [f"{b}_std" for b in BAND_NAMES]   # temporal std across composited tiles
+# Days before/after capture date to search for imagery (wider window = more clean tiles)
+DATE_TOLERANCE_DAYS = 45
+# Max tiles to download per key for compositing (3 is usually sufficient)
+MAX_TILES_PER_KEY = 3
 # Spatial grouping: same (lat_cell, lon_cell) share one product per date
 SPATIAL_GRID_DEG = 0.02  # ~2 km
 
@@ -78,8 +81,12 @@ def get_auth_headers():
     )
 
 
-def search_product(bbox_wkt, start_date, end_date, auth_headers, max_cloud=20):
-    """Search for one S2 L2A product covering bbox and date range. Returns product dict or None."""
+def search_products(bbox_wkt, start_date, end_date, auth_headers, max_cloud=20):
+    """Return up to MAX_TILES_PER_KEY S2 L2A products under max_cloud, sorted by cloud cover asc.
+
+    Downloads cloud-cover metadata per product. Products with unknown cloud cover
+    are included (they may still be usable). Returns [] if nothing found.
+    """
     filter_query = (
         f"Collection/Name eq 'SENTINEL-2' "
         f"and OData.CSC.Intersects(area=geography'SRID=4326;{bbox_wkt}') "
@@ -94,31 +101,28 @@ def search_product(bbox_wkt, start_date, end_date, auth_headers, max_cloud=20):
     }
     r = requests.get(CATALOG_URL, headers=auth_headers, params=params)
     r.raise_for_status()
-    products = r.json().get("value", [])
-    if not products:
-        return None
-    # Prefer lower cloud cover
-    best = None
-    best_cc = float("inf")
-    for p in products:
+    candidates = r.json().get("value", [])
+    if not candidates:
+        return []
+
+    results = []
+    for p in candidates:
         pid = p["Id"]
+        cc = None
         try:
             dr = requests.get(f"{CATALOG_URL}('{pid}')", headers=auth_headers)
-            if dr.status_code != 200:
-                continue
-            for attr in dr.json().get("Attributes", []) or []:
-                if attr.get("Name") == "cloudCover":
-                    cc = float(attr.get("Value", 100))
-                    if cc <= max_cloud and cc < best_cc:
-                        best_cc = cc
-                        best = p
-                    break
-            else:
-                if best is None:
-                    best = p
+            if dr.status_code == 200:
+                for attr in dr.json().get("Attributes", []) or []:
+                    if attr.get("Name") == "cloudCover":
+                        cc = float(attr.get("Value", 100))
+                        break
         except Exception:
-            continue
-    return best or products[0]
+            pass
+        if cc is None or cc <= max_cloud:
+            results.append({**p, "_cc": cc if cc is not None else 0.0})
+
+    results.sort(key=lambda x: x["_cc"])
+    return results[:MAX_TILES_PER_KEY]
 
 
 def _probe_range_support(url, auth_headers):
@@ -588,6 +592,61 @@ def sample_bands_at_point(safe_dir, lon, lat, band_names=None):
     return values
 
 
+def sample_bands_9pixels(safe_dir, lon, lat, band_names=None):
+    """Sample all 9 pixels in the 3×3 neighbourhood. Returns (9, 12) array or None.
+
+    Row-major order: top-left → top-right → ... → bottom-right.
+    Pixel 4 (index 4) is the centre pixel.
+    """
+    from rasterio.windows import Window
+    band_names = band_names or BAND_NAMES
+    band_files = find_band_files(safe_dir)
+    if len(band_files) < len(band_names):
+        return None
+    by_band = {b: path for path, b in band_files}
+    pixels = np.full((9, len(band_names)), np.nan, dtype=np.float32)
+
+    for i, band in enumerate(band_names):
+        path = by_band.get(band)
+        if not path:
+            continue
+        try:
+            with rasterio.open(path) as src:
+                xs, ys = transform("EPSG:4326", src.crs, [lon], [lat])
+                row, col = src.index(xs[0], ys[0])
+                try:
+                    patch = src.read(1, window=Window(col - 1, row - 1, 3, 3))
+                    if patch.size == 9:
+                        pixels[:, i] = patch.flatten()
+                    else:
+                        # Near boundary — fill all 9 with centre value
+                        pixels[:, i] = src.read(1, window=Window(col, row, 1, 1))[0, 0]
+                except (ValueError, rasterio.errors.WindowError):
+                    pixels[:, i] = src.read(1, window=Window(col, row, 1, 1))[0, 0]
+        except Exception:
+            pass
+
+    return None if np.all(np.isnan(pixels)) else pixels
+
+
+def _opposite_season_window(capture_date):
+    """Return (start_str, end_str) centred on the opposite Philippine season.
+
+    Wet season  Jun–Oct (habagat)  → pick Aug 1 of same year
+    Dry season  Nov–May (amihan)   → pick Feb 1 of same year (or +1 yr if Nov/Dec)
+    """
+    month, year = capture_date.month, capture_date.year
+    if month in (6, 7, 8, 9, 10):          # wet → target dry (Feb)
+        centre = date(year, 2, 1)
+    elif month in (11, 12):                 # early dry → target wet next Aug
+        centre = date(year + 1, 8, 1)
+    else:                                   # late dry (Jan–May) → target wet Aug
+        centre = date(year, 8, 1)
+    start = (centre - timedelta(days=DATE_TOLERANCE_DAYS)).strftime("%Y-%m-%dT00:00:00.000Z")
+    end   = (centre + timedelta(days=DATE_TOLERANCE_DAYS)).strftime("%Y-%m-%dT23:59:59.000Z")
+    return start, end
+
+
 def bbox_wkt(min_lon, min_lat, max_lon, max_lat):
     return f"POLYGON(({min_lon} {min_lat}, {max_lon} {min_lat}, {max_lon} {max_lat}, {min_lon} {max_lat}, {min_lon} {min_lat}))"
 
@@ -632,10 +691,22 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
                                   num_chunks=4):
     """Load field CSV, download S2 products per (spatial cell, date), sample bands, save.
 
+    Augmentation strategies applied:
+      1. Multi-temporal compositing  — all tiles within ±DATE_TOLERANCE_DAYS are
+         downloaded and averaged per-pixel; per-band temporal std stored in *_std cols.
+      2. Expanded date window        — DATE_TOLERANCE_DAYS = 45 (was 14).
+      3. Multi-season augmentation   — for each capture, also fetch tiles from the
+         opposite Philippine season (wet↔dry) and add as extra training rows.
+      4. 3×3 neighbourhood pixels   — each original GPS point yields 9 rows, one per
+         pixel in the 3×3 patch; labels are identical across the 9 rows.
+
+    Resume: tracks progress by _group_id so partial runs can be continued.
+
     Args:
-        csv_path: Path to input field CSV.
-        output_path: Path to save augmented CSV. Written incrementally after each product.
-        max_products: If set, stop after processing this many products (useful for quick tests).
+        csv_path:     Path to input field CSV.
+        output_path:  Where to save the augmented CSV (written incrementally).
+        max_products: Stop after this many spatial-cell groups (for quick tests).
+        num_chunks:   Parallel connections per ZIP download.
     """
     df = pd.read_csv(csv_path)
     df["capture_datetime"] = pd.to_datetime(df["capture_datetime"])
@@ -647,7 +718,6 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
         print(f"  WARNING: Dropping {bad.sum()} row(s) with missing lat/lon.")
         df = df[~bad].copy()
 
-    # Unique (spatial cell, date) to minimize downloads
     df["_lat_cell"] = (df["latitude"] // SPATIAL_GRID_DEG) * SPATIAL_GRID_DEG
     df["_lon_cell"] = (df["longitude"] // SPATIAL_GRID_DEG) * SPATIAL_GRID_DEG
     df["_key"] = list(zip(df["_lat_cell"], df["_lon_cell"], df["_capture_date"]))
@@ -656,9 +726,8 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
     if max_products is not None:
         keys = keys[:max_products]
         print(f"  (--max-products {max_products}: will process {len(keys)} of "
-              f"{df['_key'].nunique()} total products)")
+              f"{df['_key'].nunique()} total groups)")
 
-    # Build bbox per key (small margin around cell)
     key_to_bbox = {}
     for (lc, lonc, d) in keys:
         margin = SPATIAL_GRID_DEG / 2
@@ -669,118 +738,121 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
 
     print("Authenticating with Copernicus...")
 
-    # ── Detect already-processed keys from existing output CSV ───────────────
-    already_saved_uuids = set()
+    # ── Resume: track completed groups by _group_id ───────────────────────────
+    already_done_groups = set()
     if output_path and os.path.exists(output_path):
         try:
-            existing = pd.read_csv(output_path, usecols=["uuid"])
-            already_saved_uuids = set(existing["uuid"].dropna().astype(str).tolist())
+            existing = pd.read_csv(output_path, usecols=["_group_id"], on_bad_lines="skip")
+            already_done_groups = set(existing["_group_id"].dropna().tolist())
+            print(f"  Resuming: {len(already_done_groups)} group(s) already done.")
         except Exception:
-            already_saved_uuids = set()
+            already_done_groups = set()
 
-    def _key_already_done(key):
-        """Return True if every uuid belonging to this key is already in the output."""
-        group_uuids = set(df[df["_key"] == key]["uuid"].astype(str).tolist())
-        return bool(group_uuids) and group_uuids.issubset(already_saved_uuids)
-
-    # Pre-init output CSV with header so training can start on partial data
+    # Pre-init output CSV with all columns so training can start on partial data
+    _meta_drop = ("_lat_cell", "_lon_cell", "_key", "_capture_date")
     if output_path:
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
         if not os.path.exists(output_path):
-            base_cols = [c for c in df.columns
-                         if c not in ("_lat_cell", "_lon_cell", "_key", "_capture_date")]
-            pd.DataFrame(columns=base_cols + BAND_NAMES).to_csv(output_path, index=False, quoting=1)
+            base_cols = [c for c in df.columns if c not in _meta_drop]
+            all_cols  = base_cols + BAND_NAMES + BAND_STD_NAMES + ["_pixel_idx", "_aug_season", "_group_id"]
+            pd.DataFrame(columns=all_cols).to_csv(output_path, index=False, quoting=1)
 
-    # (lat_cell, lon_cell, date) -> safe_dir
-    key_to_safe = {}
+    # ── Helper: composite tiles → 9 pixel rows ────────────────────────────────
+    def _emit_rows(group_rows, safe_dirs, group_id, aug_season):
+        """Sample 9 pixels from composited tiles; return list of row dicts."""
+        rows_out = []
+        for _, row in group_rows.iterrows():
+            tile_pixels = []
+            for sd in safe_dirs:
+                pix = sample_bands_9pixels(sd, row["longitude"], row["latitude"])
+                if pix is not None:
+                    tile_pixels.append(pix)
+            if not tile_pixels:
+                continue
 
+            stacked   = np.stack(tile_pixels)          # (n_tiles, 9, 12)
+            pixel_arr = np.mean(stacked, axis=0)        # (9, 12) — temporal mean
+            std_arr   = (np.std(stacked, axis=0)        # (9, 12) — temporal std
+                         if len(tile_pixels) > 1
+                         else np.zeros((9, len(BAND_NAMES)), dtype=np.float32))
+
+            base = row.drop(labels=list(_meta_drop), errors="ignore")
+            for pix_idx in range(9):
+                rows_out.append({
+                    **base.to_dict(),
+                    **dict(zip(BAND_NAMES,     pixel_arr[pix_idx].tolist())),
+                    **dict(zip(BAND_STD_NAMES, std_arr[pix_idx].tolist())),
+                    "_pixel_idx":  pix_idx,
+                    "_aug_season": aug_season,
+                    "_group_id":   group_id,
+                })
+        return rows_out
+
+    # ── Helper: download all products for a search window ─────────────────────
+    def _download_tiles(products, auth_headers):
+        safe_dirs = []
+        for prod in products:
+            try:
+                sd = download_and_extract(prod["Id"], prod["Name"], auth_headers,
+                                          FIELD_DOWNLOAD_DIR, num_chunks=num_chunks)
+                safe_dirs.append(sd)
+            except Exception as exc:
+                print(f"    Download failed for {prod['Name']}: {exc}")
+        return safe_dirs
+
+    # ── Main loop ─────────────────────────────────────────────────────────────
     for i, (lc, lonc, d) in enumerate(keys):
-        # ── Skip if all rows for this key are already in the output CSV ──────
-        if _key_already_done((lc, lonc, d)):
-            print(f"  [{i+1}/{len(keys)}] Already processed — skipping "
-                  f"cell ({lc:.4f},{lonc:.4f}) date {d}")
-            continue
-
-        # Re-authenticate before each group: CDSE tokens expire in ~600 s (10 min)
-        auth_headers = get_auth_headers()
-
         min_lon, min_lat, max_lon, max_lat = key_to_bbox[(lc, lonc, d)]
         wkt = bbox_wkt(min_lon, min_lat, max_lon, max_lat)
-        start = (d - timedelta(days=DATE_TOLERANCE_DAYS)).strftime("%Y-%m-%dT00:00:00.000Z")
-        end = (d + timedelta(days=DATE_TOLERANCE_DAYS)).strftime("%Y-%m-%dT23:59:59.000Z")
-        product = search_product(wkt, start, end, auth_headers)
-        if not product:
-            print(f"  No product for cell ({lc},{lonc}) date {d}")
-            continue
-        pid = product["Id"]
-        name = product["Name"]
-        print(f"  [{i+1}/{len(keys)}] Downloading {name} for {d}...")
-        try:
-            safe_path = download_and_extract(pid, name, auth_headers, FIELD_DOWNLOAD_DIR,
-                                             num_chunks=num_chunks)
-            key_to_safe[(lc, lonc, d)] = safe_path
-        except Exception as e:
-            print(f"  Download failed: {e}")
-            continue
 
-        # --- Incremental save: sample & append rows covered by this product ---
-        if output_path:
-            group_rows = df[df["_key"] == (lc, lonc, d)]
-            rows_out = []
-            for _, row in group_rows.iterrows():
-                vals = sample_bands_at_point(safe_path, row["longitude"], row["latitude"])
-                if vals is None:
-                    continue
-                base = row.drop(labels=["_lat_cell", "_lon_cell", "_key", "_capture_date"])
-                rows_out.append({**base.to_dict(), **dict(zip(BAND_NAMES, vals.tolist()))})
-            if rows_out:
-                _append_rows_safe(pd.DataFrame(rows_out), output_path)
+        # ── Original-season group ─────────────────────────────────────────────
+        orig_group_id = f"{lc:.4f}_{lonc:.4f}_{d}_orig"
+        if orig_group_id in already_done_groups:
+            print(f"  [{i+1}/{len(keys)}] Already done — skipping {d} orig")
+        else:
+            auth_headers = get_auth_headers()
+            start = (d - timedelta(days=DATE_TOLERANCE_DAYS)).strftime("%Y-%m-%dT00:00:00.000Z")
+            end   = (d + timedelta(days=DATE_TOLERANCE_DAYS)).strftime("%Y-%m-%dT23:59:59.000Z")
+            products = search_products(wkt, start, end, auth_headers)
+            if not products:
+                print(f"  [{i+1}/{len(keys)}] No products for cell ({lc:.4f},{lonc:.4f}) date {d}")
+            else:
+                print(f"  [{i+1}/{len(keys)}] {len(products)} tile(s) for {d} "
+                      f"[CC: {', '.join(f'{p[\"_cc\"]:.0f}%' for p in products)}] — downloading...")
+                safe_dirs = _download_tiles(products, auth_headers)
+                if safe_dirs:
+                    group_rows = df[df["_key"] == (lc, lonc, d)]
+                    rows_out = _emit_rows(group_rows, safe_dirs, orig_group_id, aug_season=False)
+                    if rows_out and output_path:
+                        _append_rows_safe(pd.DataFrame(rows_out), output_path)
+                        already_done_groups.add(orig_group_id)
 
-    # Final pass for any keys that were already extracted before this run
-    # (i.e., .SAFE existed on disk — these were skipped in the loop above)
-    if output_path:
-        existing_output = pd.read_csv(output_path, on_bad_lines="skip")
-        already_done_keys = set()
-        # Determine which keys we already saved incrementally
-        for (lc, lonc, d), safe in key_to_safe.items():
-            already_done_keys.add((lc, lonc, d))
+        # ── Opposite-season augmentation ──────────────────────────────────────
+        aug_group_id = f"{lc:.4f}_{lonc:.4f}_{d}_aug"
+        if aug_group_id in already_done_groups:
+            print(f"  [{i+1}/{len(keys)}] Already done — skipping {d} aug")
+        else:
+            auth_headers = get_auth_headers()
+            opp_start, opp_end = _opposite_season_window(d)
+            opp_products = search_products(wkt, opp_start, opp_end, auth_headers)
+            if not opp_products:
+                print(f"    Multi-season: no tiles found for opposite season")
+            else:
+                print(f"    Multi-season: {len(opp_products)} tile(s) — downloading...")
+                opp_safe_dirs = _download_tiles(opp_products, auth_headers)
+                if opp_safe_dirs:
+                    group_rows = df[df["_key"] == (lc, lonc, d)]
+                    opp_rows = _emit_rows(group_rows, opp_safe_dirs, aug_group_id, aug_season=True)
+                    if opp_rows and output_path:
+                        _append_rows_safe(pd.DataFrame(opp_rows), output_path)
+                        already_done_groups.add(aug_group_id)
 
-        remaining = [k for k in df["_key"].unique() if k not in already_done_keys]
-        if remaining:
-            extra_rows = []
-            for k in remaining:
-                safe = key_to_safe.get(k)
-                if safe is None:
-                    continue
-                for _, row in df[df["_key"] == k].iterrows():
-                    vals = sample_bands_at_point(safe, row["longitude"], row["latitude"])
-                    if vals is None:
-                        continue
-                    base = row.drop(labels=["_lat_cell", "_lon_cell", "_key", "_capture_date"])
-                    extra_rows.append({**base.to_dict(), **dict(zip(BAND_NAMES, vals.tolist()))})
-            if extra_rows:
-                _append_rows_safe(pd.DataFrame(extra_rows), output_path)
-
+    if output_path and os.path.exists(output_path):
         final = pd.read_csv(output_path, on_bad_lines="skip")
-        print(f"\nDone. {len(final)} rows with full band data saved to {output_path}")
+        print(f"\nDone. {len(final)} rows saved to {output_path}")
         return final
 
-    # Fallback: in-memory return (no output_path given)
-    band_data = []
-    for _, row in df.iterrows():
-        k = row["_key"]
-        safe = key_to_safe.get(k)
-        if safe is None:
-            band_data.append([np.nan] * 12)
-            continue
-        vals = sample_bands_at_point(safe, row["longitude"], row["latitude"])
-        band_data.append(vals.tolist() if vals is not None else [np.nan] * 12)
-
-    band_df = pd.DataFrame(band_data, columns=BAND_NAMES)
-    out = pd.concat(
-        [df.drop(columns=["_lat_cell", "_lon_cell", "_key", "_capture_date"]), band_df], axis=1
-    )
-    return out.dropna(subset=BAND_NAMES)
+    return None
 
 
 if __name__ == "__main__":
