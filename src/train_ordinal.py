@@ -24,7 +24,7 @@ from sklearn.metrics import (
     mean_absolute_error,
 )
 from sklearn.inspection import permutation_importance
-from sklearn.model_selection import GroupKFold
+from sklearn.model_selection import GroupKFold, StratifiedKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.svm import SVC
@@ -372,7 +372,7 @@ def _run_one_model(model, model_name, X_valid, y_valid, groups_valid,
     all_true, all_pred = [], []
     last_Xte, last_yte = None, None
 
-    for train_idx, test_idx in gkf.split(X_valid, y_valid, groups=groups_valid):
+    for train_idx, test_idx in gkf(X_valid, y_valid, groups_valid):
         Xtr = preprocessor.fit_transform(X_valid.iloc[train_idx])
         Xte = preprocessor.transform(X_valid.iloc[test_idx])
         ytr, yte = y_valid.iloc[train_idx], y_valid.iloc[test_idx]
@@ -509,11 +509,15 @@ def plot_model_comparison(results_by_model, target_col, figures_dir):
 
 def train_and_evaluate(df, X, groups, target_col, preprocessor,
                        num_features, cat_features, figures_dir="outputs/figures",
-                       use_smote=False):
+                       use_smote=False, min_groups_for_spatial_cv=4):
     """
-    Train XGBoost, Random Forest, and SVM with GroupKFold.
+    Train XGBoost, Random Forest, and SVM with GroupKFold (or StratifiedKFold fallback).
     Prints per-fold + pooled metrics for each model and saves comparison plots.
     Returns (best_model, list_of_metric_dicts).
+
+    When the number of unique spatial groups is below min_groups_for_spatial_cv,
+    falls back to 5-fold StratifiedKFold so leave-one-barangay-out doesn't dominate
+    results with only 2 groups.
     """
     ph_targets  = df.attrs.get("ph_targets", [])
     ph_values   = df.attrs.get("ph_values",  [])
@@ -533,10 +537,19 @@ def train_and_evaluate(df, X, groups, target_col, preprocessor,
     groups_valid = groups[valid_idx]
 
     n_groups = groups_valid.nunique()
-    n_splits = min(5, n_groups)
-    if n_splits < 5:
-        print(f"  Note: {n_groups} unique groups — using {n_splits}-fold.")
-    gkf = GroupKFold(n_splits=n_splits)
+    if n_groups < min_groups_for_spatial_cv:
+        print(f"  Note: only {n_groups} spatial group(s) — falling back to "
+              f"5-fold StratifiedKFold (too few groups for meaningful GroupKFold).")
+        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        # StratifiedKFold.split does not use groups
+        splitter = lambda X, y, g: cv.split(X, y)
+    else:
+        n_splits = min(5, n_groups)
+        if n_splits < 5:
+            print(f"  Note: {n_groups} unique groups — using {n_splits}-fold GroupKFold.")
+        cv = GroupKFold(n_splits=n_splits)
+        splitter = lambda X, y, g: cv.split(X, y, groups=g)
+    gkf = splitter  # passed into _run_one_model as the split callable
 
     models           = _build_models(n_classes, is_ph=is_ph)
     results_by_model = {}
@@ -602,6 +615,9 @@ if __name__ == "__main__":
     parser.add_argument("--smote", action="store_true",
                         help="Apply SMOTE oversampling on minority classes per fold "
                              "(requires: pip install imbalanced-learn).")
+    parser.add_argument("--min-groups-spatial-cv", type=int, default=4, metavar="N",
+                        help="Minimum unique spatial groups required to use GroupKFold. "
+                             "Falls back to StratifiedKFold when below this threshold (default: 4).")
     args = parser.parse_args()
 
     if not os.path.isfile(args.data_path):
@@ -621,6 +637,7 @@ if __name__ == "__main__":
             df, X, groups, t, preprocessor,
             num_feat, cat_feat, figures_dir=args.figures_dir,
             use_smote=args.smote,
+            min_groups_for_spatial_cv=args.min_groups_spatial_cv,
         )
         all_results.extend(metrics_list)
         for model_name, (feat_names, imps) in imp_by_model.items():
