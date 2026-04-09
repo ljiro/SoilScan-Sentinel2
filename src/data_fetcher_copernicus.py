@@ -602,7 +602,7 @@ def _append_rows_safe(df_chunk, output_path, retries=6, delay=5):
     import time
     for attempt in range(1, retries + 1):
         try:
-            df_chunk.to_csv(output_path, mode="a", header=False, index=False)
+            df_chunk.to_csv(output_path, mode="a", header=False, index=False, quoting=1)  # QUOTE_ALL
             # Count rows for progress display
             try:
                 total = sum(1 for _ in open(output_path)) - 1
@@ -622,7 +622,7 @@ def _append_rows_safe(df_chunk, output_path, retries=6, delay=5):
     # All retries exhausted — save to a sidecar so no data is lost
     base, ext = os.path.splitext(output_path)
     sidecar = f"{base}_overflow_{int(__import__('time').time())}{ext}"
-    df_chunk.to_csv(sidecar, index=False)
+    df_chunk.to_csv(sidecar, index=False, quoting=1)  # QUOTE_ALL
     print(f"  ERROR: Could not write to {output_path} after {retries} retries.")
     print(f"  Rows saved to sidecar file: {sidecar}")
     print(f"  Close the file in Excel, then manually merge the sidecar.")
@@ -689,7 +689,7 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
         if not os.path.exists(output_path):
             base_cols = [c for c in df.columns
                          if c not in ("_lat_cell", "_lon_cell", "_key", "_capture_date")]
-            pd.DataFrame(columns=base_cols + BAND_NAMES).to_csv(output_path, index=False)
+            pd.DataFrame(columns=base_cols + BAND_NAMES).to_csv(output_path, index=False, quoting=1)
 
     # (lat_cell, lon_cell, date) -> safe_dir
     key_to_safe = {}
@@ -739,7 +739,7 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
     # Final pass for any keys that were already extracted before this run
     # (i.e., .SAFE existed on disk — these were skipped in the loop above)
     if output_path:
-        existing_output = pd.read_csv(output_path)
+        existing_output = pd.read_csv(output_path, on_bad_lines="skip")
         already_done_keys = set()
         # Determine which keys we already saved incrementally
         for (lc, lonc, d), safe in key_to_safe.items():
@@ -761,7 +761,7 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
             if extra_rows:
                 _append_rows_safe(pd.DataFrame(extra_rows), output_path)
 
-        final = pd.read_csv(output_path)
+        final = pd.read_csv(output_path, on_bad_lines="skip")
         print(f"\nDone. {len(final)} rows with full band data saved to {output_path}")
         return final
 
