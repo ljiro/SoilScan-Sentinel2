@@ -14,6 +14,7 @@ import scipy.stats as st
 import xgboost as xgb
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.impute import SimpleImputer
 from sklearn.metrics import (
     accuracy_score,
     classification_report,
@@ -24,6 +25,7 @@ from sklearn.metrics import (
 )
 from sklearn.inspection import permutation_importance
 from sklearn.model_selection import GroupKFold
+from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.svm import SVC
 from sklearn.utils.class_weight import compute_sample_weight
@@ -161,10 +163,18 @@ def load_and_prepare_data(csv_path):
 
 
 def build_pipeline(num_features, cat_features):
-    """Preprocessing: standard scaling for numerics, one-hot for categorical."""
+    """Preprocessing: impute → scale for numerics, one-hot for categorical.
+
+    SimpleImputer(median) handles NaN in temporal-std features (B*_std = 0
+    when only one tile was downloaded for a location).
+    """
+    num_pipe = Pipeline([
+        ("impute", SimpleImputer(strategy="median")),
+        ("scale",  StandardScaler()),
+    ])
     preprocessor = ColumnTransformer(
         transformers=[
-            ("num", StandardScaler(), num_features),
+            ("num", num_pipe, num_features),
             ("cat", OneHotEncoder(handle_unknown="ignore"), cat_features),
         ]
     )
