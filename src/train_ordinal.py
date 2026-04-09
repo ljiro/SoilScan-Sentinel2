@@ -365,16 +365,17 @@ def _run_one_model(model, model_name, X_valid, y_valid, groups_valid,
         else:
             model.fit(Xtr, ytr, sample_weight=sw)
 
-        yp = model.predict(Xte)
-        all_true.extend(yte.values)
+        yp = np.array(model.predict(Xte)).flatten().astype(int)
+        yte_arr = np.array(yte.values).flatten().astype(int)
+        all_true.extend(yte_arr)
         all_pred.extend(yp)
-        fold_oa.append(accuracy_score(yte, yp))
-        fold_f1.append(f1_score(yte, yp, average="macro", zero_division=0))
-        fold_wf1.append(f1_score(yte, yp, average="weighted", zero_division=0))
-        fold_kappa.append(cohen_kappa_score(yte, yp))
-        fold_mae.append(mean_absolute_error(yte, yp))
+        fold_oa.append(accuracy_score(yte_arr, yp))
+        fold_f1.append(f1_score(yte_arr, yp, average="macro", zero_division=0))
+        fold_wf1.append(f1_score(yte_arr, yp, average="weighted", zero_division=0))
+        fold_kappa.append(cohen_kappa_score(yte_arr, yp))
+        fold_mae.append(mean_absolute_error(yte_arr, yp))
         # Keep the last fold's test split for importance computation
-        last_Xte, last_yte = Xte, yte.values
+        last_Xte, last_yte = Xte, yte_arr
 
     return (
         np.array(all_true), np.array(all_pred),
