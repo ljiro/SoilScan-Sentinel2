@@ -592,6 +592,48 @@ def sample_bands_at_point(safe_dir, lon, lat, band_names=None):
     return values
 
 
+def sample_bands_all_points(safe_dir, lons, lats, band_names=None):
+    """Batch-sample all 12 bands for a list of (lon, lat) points from one .SAFE dir.
+
+    Opens each band file exactly once and samples all points in a single pass —
+    much faster than calling sample_bands_9pixels per point when many points share
+    the same tile.
+
+    Returns (N, 9, 12) array where N = len(lons).
+    Points that fall outside the raster extent are filled with NaN.
+    """
+    from rasterio.windows import Window
+    band_names = band_names or BAND_NAMES
+    band_files = find_band_files(safe_dir)
+    if len(band_files) < len(band_names):
+        return None
+    by_band = {b: path for path, b in band_files}
+    n_pts = len(lons)
+    result = np.full((n_pts, 9, len(band_names)), np.nan, dtype=np.float32)
+
+    for bi, band in enumerate(band_names):
+        path = by_band.get(band)
+        if not path:
+            continue
+        try:
+            with rasterio.open(path) as src:
+                # Transform all points at once
+                xs, ys = transform("EPSG:4326", src.crs, lons, lats)
+                for pi, (x, y) in enumerate(zip(xs, ys)):
+                    try:
+                        row, col = src.index(x, y)
+                        patch = src.read(1, window=Window(col - 1, row - 1, 3, 3))
+                        if patch.size == 9:
+                            result[pi, :, bi] = patch.flatten()
+                        else:
+                            result[pi, :, bi] = src.read(1, window=Window(col, row, 1, 1))[0, 0]
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    return result
+
+
 def sample_bands_9pixels(safe_dir, lon, lat, band_names=None):
     """Sample all 9 pixels in the 3×3 neighbourhood. Returns (9, 12) array or None.
 
@@ -762,35 +804,45 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
 
     # ── Helper: composite tiles → pixel rows ──────────────────────────────────
     def _emit_rows(group_rows, safe_dirs, group_id, aug_season):
-        """Sample pixels from composited tiles; return list of row dicts.
+        """Batch-sample pixels from composited tiles; return list of row dicts.
+
+        Opens each band file once per tile for all points in group_rows —
+        O(n_tiles × n_bands) file opens instead of O(n_points × n_bands).
 
         Default: centre pixel only (pixel index 4 of the 3×3 patch).
         With all_pixels=True: all 9 neighbourhood pixels as separate rows.
         """
-        _CENTRE = 4   # index of centre pixel in flattened 3×3 patch
+        _CENTRE = 4
+        lons = group_rows["longitude"].tolist()
+        lats = group_rows["latitude"].tolist()
+
+        # (n_tiles, n_pts, 9, 12)
+        tile_arrays = []
+        for sd in safe_dirs:
+            arr = sample_bands_all_points(sd, lons, lats)
+            if arr is not None:
+                tile_arrays.append(arr)
+
+        if not tile_arrays:
+            return []
+
+        stacked   = np.stack(tile_arrays)              # (n_tiles, n_pts, 9, 12)
+        pixel_arr = np.mean(stacked, axis=0)            # (n_pts, 9, 12) temporal mean
+        std_arr   = (np.std(stacked, axis=0)
+                     if len(tile_arrays) > 1
+                     else np.zeros_like(pixel_arr))
+
         rows_out = []
-        for _, row in group_rows.iterrows():
-            tile_pixels = []
-            for sd in safe_dirs:
-                pix = sample_bands_9pixels(sd, row["longitude"], row["latitude"])
-                if pix is not None:
-                    tile_pixels.append(pix)
-            if not tile_pixels:
+        pixel_indices = range(9) if all_pixels else [_CENTRE]
+        for pi, (_, row) in enumerate(group_rows.iterrows()):
+            if np.all(np.isnan(pixel_arr[pi])):
                 continue
-
-            stacked   = np.stack(tile_pixels)          # (n_tiles, 9, 12)
-            pixel_arr = np.mean(stacked, axis=0)        # (9, 12) — temporal mean
-            std_arr   = (np.std(stacked, axis=0)        # (9, 12) — temporal std
-                         if len(tile_pixels) > 1
-                         else np.zeros((9, len(BAND_NAMES)), dtype=np.float32))
-
             base = row.drop(labels=list(_meta_drop), errors="ignore")
-            pixel_indices = range(9) if all_pixels else [_CENTRE]
             for pix_idx in pixel_indices:
                 rows_out.append({
                     **base.to_dict(),
-                    **dict(zip(BAND_NAMES,     pixel_arr[pix_idx].tolist())),
-                    **dict(zip(BAND_STD_NAMES, std_arr[pix_idx].tolist())),
+                    **dict(zip(BAND_NAMES,     pixel_arr[pi, pix_idx].tolist())),
+                    **dict(zip(BAND_STD_NAMES, std_arr[pi, pix_idx].tolist())),
                     "_pixel_idx":  pix_idx,
                     "_aug_season": aug_season,
                     "_group_id":   group_id,
