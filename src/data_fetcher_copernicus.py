@@ -809,6 +809,38 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
                 print(f"    Download failed for {prod['Name']}: {exc}")
         return safe_dirs
 
+    # ── Pre-scan: find all .SAFE dirs already on disk (avoid API calls) ─────────
+    def _find_local_safe_dirs():
+        """Return list of all .SAFE paths already extracted in FIELD_DOWNLOAD_DIR."""
+        pattern = os.path.join(FIELD_DOWNLOAD_DIR, "*.SAFE")
+        dirs = glob.glob(pattern)
+        # Also check subdirs that were extracted without .SAFE suffix
+        for entry in os.scandir(FIELD_DOWNLOAD_DIR) if os.path.isdir(FIELD_DOWNLOAD_DIR) else []:
+            if entry.is_dir() and "MSIL2A" in entry.name and entry.path not in dirs:
+                if glob.glob(os.path.join(entry.path, "GRANULE", "*")):
+                    dirs.append(entry.path)
+        return dirs
+
+    def _safe_date(safe_path):
+        """Extract sensing date (YYYYMMDD) from .SAFE product name."""
+        name = os.path.basename(safe_path)
+        m = re.search(r"_(\d{8})T\d{6}_", name)
+        return m.group(1) if m else None
+
+    local_safe_dirs = _find_local_safe_dirs()
+    print(f"  Found {len(local_safe_dirs)} .SAFE product(s) already on disk.")
+
+    def _match_local_tiles(target_date, tolerance_days):
+        """Return local .SAFE dirs whose sensing date is within tolerance of target_date."""
+        matched = []
+        for sd in local_safe_dirs:
+            ds = _safe_date(sd)
+            if ds:
+                tile_date = date(int(ds[:4]), int(ds[4:6]), int(ds[6:8]))
+                if abs((tile_date - target_date).days) <= tolerance_days:
+                    matched.append(sd)
+        return matched[:MAX_TILES_PER_KEY]
+
     # ── Main loop ─────────────────────────────────────────────────────────────
     for i, (lc, lonc, d) in enumerate(keys):
         min_lon, min_lat, max_lon, max_lat = key_to_bbox[(lc, lonc, d)]
@@ -819,42 +851,59 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
         if orig_group_id in already_done_groups:
             print(f"  [{i+1}/{len(keys)}] Already done — skipping {d} orig")
         else:
-            auth_headers = get_auth_headers()
-            start = (d - timedelta(days=DATE_TOLERANCE_DAYS)).strftime("%Y-%m-%dT00:00:00.000Z")
-            end   = (d + timedelta(days=DATE_TOLERANCE_DAYS)).strftime("%Y-%m-%dT23:59:59.000Z")
-            products = search_products(wkt, start, end, auth_headers)
-            if not products:
-                print(f"  [{i+1}/{len(keys)}] No products for cell ({lc:.4f},{lonc:.4f}) date {d}")
+            # Check disk first — skip catalog API if tiles are already present
+            safe_dirs = _match_local_tiles(d, DATE_TOLERANCE_DAYS)
+            if safe_dirs:
+                print(f"  [{i+1}/{len(keys)}] {len(safe_dirs)} local tile(s) for {d} — sampling...")
             else:
-                cc_str = ", ".join(f"{p['_cc']:.0f}%" for p in products)
-                print(f"  [{i+1}/{len(keys)}] {len(products)} tile(s) for {d} "
-                      f"[CC: {cc_str}] — downloading...")
-                safe_dirs = _download_tiles(products, auth_headers)
-                if safe_dirs:
-                    group_rows = df[df["_key"] == (lc, lonc, d)]
-                    rows_out = _emit_rows(group_rows, safe_dirs, orig_group_id, aug_season=False)
-                    if rows_out and output_path:
-                        _append_rows_safe(pd.DataFrame(rows_out), output_path)
-                        already_done_groups.add(orig_group_id)
+                auth_headers = get_auth_headers()
+                start = (d - timedelta(days=DATE_TOLERANCE_DAYS)).strftime("%Y-%m-%dT00:00:00.000Z")
+                end   = (d + timedelta(days=DATE_TOLERANCE_DAYS)).strftime("%Y-%m-%dT23:59:59.000Z")
+                products = search_products(wkt, start, end, auth_headers)
+                if not products:
+                    print(f"  [{i+1}/{len(keys)}] No products for cell ({lc:.4f},{lonc:.4f}) date {d}")
+                else:
+                    cc_str = ", ".join(f"{p['_cc']:.0f}%" for p in products)
+                    print(f"  [{i+1}/{len(keys)}] {len(products)} tile(s) for {d} "
+                          f"[CC: {cc_str}] — downloading...")
+                    safe_dirs = _download_tiles(products, auth_headers)
+
+            if safe_dirs:
+                group_rows = df[df["_key"] == (lc, lonc, d)]
+                rows_out = _emit_rows(group_rows, safe_dirs, orig_group_id, aug_season=False)
+                if rows_out and output_path:
+                    _append_rows_safe(pd.DataFrame(rows_out), output_path)
+                    already_done_groups.add(orig_group_id)
 
         # ── Opposite-season augmentation ──────────────────────────────────────
         aug_group_id = f"{lc:.4f}_{lonc:.4f}_{d}_aug"
         if aug_group_id in already_done_groups:
             print(f"  [{i+1}/{len(keys)}] Already done — skipping {d} aug")
         else:
-            auth_headers = get_auth_headers()
-            opp_start, opp_end = _opposite_season_window(d)
-            opp_products = search_products(wkt, opp_start, opp_end, auth_headers)
-            if not opp_products:
-                print(f"    Multi-season: no tiles found for opposite season")
+            opp_start_dt, opp_end_dt = _opposite_season_window(d)
+            opp_centre = date(
+                int(opp_start_dt[:4]),
+                int(opp_start_dt[5:7]),
+                int(opp_start_dt[8:10]),
+            ) + timedelta(days=DATE_TOLERANCE_DAYS)
+            opp_safe_dirs = _match_local_tiles(opp_centre, DATE_TOLERANCE_DAYS)
+            if opp_safe_dirs:
+                print(f"    Multi-season: {len(opp_safe_dirs)} local tile(s) — sampling...")
             else:
-                print(f"    Multi-season: {len(opp_products)} tile(s) — downloading...")
-                opp_safe_dirs = _download_tiles(opp_products, auth_headers)
-                if opp_safe_dirs:
-                    group_rows = df[df["_key"] == (lc, lonc, d)]
-                    opp_rows = _emit_rows(group_rows, opp_safe_dirs, aug_group_id, aug_season=True)
-                    if opp_rows and output_path:
-                        _append_rows_safe(pd.DataFrame(opp_rows), output_path)
+                auth_headers = get_auth_headers()
+                opp_products = search_products(wkt, opp_start_dt, opp_end_dt, auth_headers)
+                if not opp_products:
+                    print(f"    Multi-season: no tiles found for opposite season")
+                    opp_safe_dirs = []
+                else:
+                    print(f"    Multi-season: {len(opp_products)} tile(s) — downloading...")
+                    opp_safe_dirs = _download_tiles(opp_products, auth_headers)
+
+            if opp_safe_dirs:
+                group_rows = df[df["_key"] == (lc, lonc, d)]
+                opp_rows = _emit_rows(group_rows, opp_safe_dirs, aug_group_id, aug_season=True)
+                if opp_rows and output_path:
+                    _append_rows_safe(pd.DataFrame(opp_rows), output_path)
                         already_done_groups.add(aug_group_id)
 
     if output_path and os.path.exists(output_path):
