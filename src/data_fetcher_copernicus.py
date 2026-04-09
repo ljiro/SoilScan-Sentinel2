@@ -99,8 +99,12 @@ def search_products(bbox_wkt, start_date, end_date, auth_headers, max_cloud=20):
         "$orderby": "ContentDate/Start desc",
         "$top": 20,
     }
-    r = requests.get(CATALOG_URL, headers=auth_headers, params=params)
-    r.raise_for_status()
+    try:
+        r = requests.get(CATALOG_URL, headers=auth_headers, params=params, timeout=30)
+        r.raise_for_status()
+    except Exception as exc:
+        print(f"    Catalog search failed: {exc}")
+        return []
     candidates = r.json().get("value", [])
     if not candidates:
         return []
@@ -941,6 +945,9 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
             opp_safe_dirs = _match_local_tiles(opp_centre, DATE_TOLERANCE_DAYS)
             if opp_safe_dirs:
                 print(f"    Multi-season: {len(opp_safe_dirs)} local tile(s) — sampling...")
+            elif opp_centre > date.today():
+                print(f"    Multi-season: target date {opp_centre} is in the future — skipping.")
+                opp_safe_dirs = []
             else:
                 auth_headers = get_auth_headers()
                 opp_products = search_products(wkt, opp_start_dt, opp_end_dt, auth_headers)
