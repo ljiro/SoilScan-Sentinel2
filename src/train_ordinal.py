@@ -365,7 +365,10 @@ def _run_one_model(model, model_name, X_valid, y_valid, groups_valid,
         else:
             model.fit(Xtr, ytr, sample_weight=sw)
 
-        yp = np.array(model.predict(Xte)).flatten().astype(int)
+        yp = np.array(model.predict(Xte))
+        if yp.ndim == 2:   # multi:softprob returns (n, n_classes) in some XGB versions
+            yp = np.argmax(yp, axis=1)
+        yp = yp.flatten().astype(int)
         yte_arr = np.array(yte.values).flatten().astype(int)
         all_true.extend(yte_arr)
         all_pred.extend(yp)
