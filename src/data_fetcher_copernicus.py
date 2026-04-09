@@ -817,8 +817,9 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
             if not products:
                 print(f"  [{i+1}/{len(keys)}] No products for cell ({lc:.4f},{lonc:.4f}) date {d}")
             else:
+                cc_str = ", ".join(f"{p['_cc']:.0f}%" for p in products)
                 print(f"  [{i+1}/{len(keys)}] {len(products)} tile(s) for {d} "
-                      f"[CC: {', '.join(f'{p[\"_cc\"]:.0f}%' for p in products)}] — downloading...")
+                      f"[CC: {cc_str}] — downloading...")
                 safe_dirs = _download_tiles(products, auth_headers)
                 if safe_dirs:
                     group_rows = df[df["_key"] == (lc, lonc, d)]
