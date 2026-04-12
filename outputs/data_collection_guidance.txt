@@ -7,42 +7,34 @@
   --------------------------------------------------------------
   Location                  Low   Medium     High     Total
   --------------------------------------------------------
-  Balili                    475        5        0       480
-  Paoay                     644       65        0       709
+  Paoay                     337       38        0       375
   --------------------------------------------------------
-  TOTAL                    1119       70        0      1189
+  TOTAL                     337       38        0       375
 
   Issues:
-  !! CRITICAL — Balili: Medium Nitrogen (N)   [Low <11 | Medium 11-20 | High >20 mg/kg] (only 5 samples, need ~639 more)
-  !! MISSING  — Balili: High Nitrogen (N)   [Low <11 | Medium 11-20 | High >20 mg/kg] (need ~644 samples)
-     LOW      — Paoay: Medium Nitrogen (N)   [Low <11 | Medium 11-20 | High >20 mg/kg] (65 samples, suggest 257 more)
-  !! MISSING  — Paoay: High Nitrogen (N)   [Low <11 | Medium 11-20 | High >20 mg/kg] (need ~644 samples)
+     LOW      — Paoay: Medium Nitrogen (N)   [Low <11 | Medium 11-20 | High >20 mg/kg] (38 samples, suggest 130 more)
+  !! MISSING  — Paoay: High Nitrogen (N)   [Low <11 | Medium 11-20 | High >20 mg/kg] (need ~337 samples)
 
   Target: Phosphorus (P) [Low <11 | Medium 11-25 | High >25 mg/kg]
   --------------------------------------------------------------
   Location                  Low   Medium     High     Total
   --------------------------------------------------------
-  Balili                    185       70      225       480
-  Paoay                     195      199      315       709
+  Paoay                      99      100      176       375
   --------------------------------------------------------
-  TOTAL                     380      269      540      1189
+  TOTAL                      99      100      176       375
 
-  Issues:
-     LOW      — Balili: Medium Phosphorus (P) [Low <11 | Medium 11-25 | High >25 mg/kg] (70 samples, suggest 87 more)
+  All class × location cells are adequately populated.
 
   Target: Potassium (K)  [Low <78 | Medium 78-156 | High >156 mg/kg]
   --------------------------------------------------------------
   Location                  Low   Medium     High     Total
   --------------------------------------------------------
-  Balili                    340      140        0       480
-  Paoay                      95      378      236       709
+  Paoay                      38      181      156       375
   --------------------------------------------------------
-  TOTAL                     435      518      236      1189
+  TOTAL                      38      181      156       375
 
   Issues:
-     LOW      — Balili: Medium Potassium (K)  [Low <78 | Medium 78-156 | High >156 mg/kg] (140 samples, suggest 49 more)
-  !! MISSING  — Balili: High Potassium (K)  [Low <78 | Medium 78-156 | High >156 mg/kg] (need ~378 samples)
-     LOW      — Paoay: Low Potassium (K)  [Low <78 | Medium 78-156 | High >156 mg/kg] (95 samples, suggest 94 more)
+     LOW      — Paoay: Low Potassium (K)  [Low <78 | Medium 78-156 | High >156 mg/kg] (38 samples, suggest 52 more)
 
   ==================================================================
   NOTE: Zero 'High N' samples exist anywhere in the dataset.
