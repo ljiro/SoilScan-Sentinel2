@@ -923,7 +923,16 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
             safe_dirs = _match_local_tiles(target_d, DATE_TOLERANCE_DAYS)
             if safe_dirs:
                 print(f"  [{i+1}/{len(keys)}] {len(safe_dirs)} local tile(s) for {target_d} — sampling...")
-            else:
+
+            group_rows = df[df["_key"] == (lc, lonc, d)]
+            rows_out = _emit_rows(group_rows, safe_dirs, orig_group_id, aug_season=False) if safe_dirs else []
+
+            # If local tiles yielded nothing (empty, wrong extent, missing bands),
+            # fall through to download fresh tiles from the Copernicus catalog.
+            if not rows_out:
+                if safe_dirs:
+                    print(f"  [{i+1}/{len(keys)}] Local tile(s) yielded 0 rows — "
+                          f"fetching from Copernicus catalog...")
                 auth_headers = get_auth_headers()
                 start = (target_d - timedelta(days=DATE_TOLERANCE_DAYS)).strftime("%Y-%m-%dT00:00:00.000Z")
                 end   = (target_d + timedelta(days=DATE_TOLERANCE_DAYS)).strftime("%Y-%m-%dT23:59:59.000Z")
@@ -935,13 +944,11 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
                     print(f"  [{i+1}/{len(keys)}] {len(products)} tile(s) for {target_d} "
                           f"[CC: {cc_str}] — downloading...")
                     safe_dirs = _download_tiles(products, auth_headers)
+                    rows_out = _emit_rows(group_rows, safe_dirs, orig_group_id, aug_season=False)
 
-            if safe_dirs:
-                group_rows = df[df["_key"] == (lc, lonc, d)]
-                rows_out = _emit_rows(group_rows, safe_dirs, orig_group_id, aug_season=False)
-                if rows_out and output_path:
-                    _append_rows_safe(pd.DataFrame(rows_out), output_path)
-                    already_done_groups.add(orig_group_id)
+            if rows_out and output_path:
+                _append_rows_safe(pd.DataFrame(rows_out), output_path)
+                already_done_groups.add(orig_group_id)
 
         # ── Opposite-season augmentation ──────────────────────────────────────
         aug_group_id = f"{lc:.4f}_{lonc:.4f}_{d}_aug"
