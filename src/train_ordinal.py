@@ -13,7 +13,7 @@ import pandas as pd
 import scipy.stats as st
 import xgboost as xgb
 from sklearn.compose import ColumnTransformer
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import (
     accuracy_score,
@@ -22,13 +22,15 @@ from sklearn.metrics import (
     confusion_matrix,
     f1_score,
     mean_absolute_error,
+    mean_squared_error,
+    r2_score,
 )
 from sklearn.inspection import permutation_importance
 from sklearn.model_selection import GroupKFold, StratifiedKFold
-from sklearn.neural_network import MLPClassifier
+from sklearn.neural_network import MLPClassifier, MLPRegressor
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
-from sklearn.svm import SVC
+from sklearn.svm import SVC, SVR
 from sklearn.utils.class_weight import compute_sample_weight
 
 CLASS_NAMES = ["Low", "Medium", "High"]
@@ -76,6 +78,10 @@ MAE_REAL_UNITS = {
     "k":  (78.0,  "mg/kg"),
     "ph": (0.4,   "pH units"),
 }
+
+# CPR pH scale — 11 steps from 4.0 to 7.6 in 0.4 increments.
+# Defined at module level so regression helpers can reference it directly.
+PH_VALUES = [4.0, 4.4, 4.8, 5.2, 5.4, 5.8, 6.0, 6.4, 6.8, 7.2, 7.6]
 
 # Small epsilon to avoid division by zero in index calculations
 _EPS = 1e-6
@@ -281,9 +287,7 @@ def load_and_prepare_data(csv_path, deduplicate=False, balance_locs=False):
         balance_locations(df, ["n", "p", "k"])
 
     # N / P / K: ordinal 3-class already encoded as 0=Low, 1=Medium, 2=High
-    # ph: ordinal 11-class from rapid soil test kit CPR scale
-    #   (4.0, 4.4, 4.8, 5.2, 5.4, 5.8, 6.0, 6.4, 6.8, 7.2, 7.6)
-    PH_VALUES  = [4.0, 4.4, 4.8, 5.2, 5.4, 5.8, 6.0, 6.4, 6.8, 7.2, 7.6]
+    # ph: ordinal 11-class from rapid soil test kit CPR scale (module-level PH_VALUES)
     ph_mapping = {v: i for i, v in enumerate(PH_VALUES)}
 
     npk_targets = ["n", "p", "k"]
@@ -1087,6 +1091,291 @@ def print_data_collection_guidance(df: pd.DataFrame, output_dir: str = "outputs"
     print(f"  Guidance saved: {report_path}\n")
 
 
+# ---------------------------------------------------------------------------
+# Regression mode
+# ---------------------------------------------------------------------------
+
+# For N/P/K the regression target is the ordinal integer (0/1/2).
+# For pH the raw float pH values from the field CSV are used (4.0-7.6).
+# These midpoints are used to convert ordinal predictions back to mg/kg.
+ORDINAL_MIDPOINTS = {
+    "n":  [5.5,  15.5, 25.5],   # Low / Medium / High mid-class
+    "p":  [5.5,  18.0, 37.5],
+    "k":  [39.0, 117.0, 195.0],
+}
+
+
+def _build_regression_models() -> dict:
+    """Return {name: regressor} for the regression pipeline."""
+    return {
+        "XGBoost": xgb.XGBRegressor(
+            objective="reg:squarederror",
+            max_depth=6, n_estimators=500, learning_rate=0.03,
+            subsample=0.8, colsample_bytree=0.7,
+            reg_alpha=0.1, reg_lambda=1.5, random_state=42, n_jobs=-1,
+        ),
+        "RandomForest": RandomForestRegressor(
+            n_estimators=500, max_depth=None, min_samples_leaf=2,
+            max_features="sqrt", random_state=42, n_jobs=-1,
+        ),
+        "SVR": SVR(kernel="rbf", C=10, gamma="scale", epsilon=0.1),
+        "MLP": MLPRegressor(
+            hidden_layer_sizes=(128, 64, 32),
+            activation="relu", solver="adam", alpha=1e-3,
+            learning_rate_init=1e-3, max_iter=500,
+            early_stopping=True, validation_fraction=0.1,
+            n_iter_no_change=20, random_state=42,
+        ),
+    }
+
+
+def _run_one_regression_model(model, model_name, X_valid, y_valid,
+                               groups_valid, preprocessor, gkf):
+    """GroupKFold loop for one regressor.
+
+    Returns (y_true, y_pred_continuous, fold_metrics, last_Xte, last_yte).
+    y_pred_continuous is the raw float output (not rounded).
+    """
+    fold_rmse, fold_mae, fold_r2, fold_spearman = [], [], [], []
+    all_true, all_pred = [], []
+    last_Xte, last_yte = None, None
+
+    for train_idx, test_idx in gkf(X_valid, y_valid, groups_valid):
+        Xtr = preprocessor.fit_transform(X_valid.iloc[train_idx])
+        Xte = preprocessor.transform(X_valid.iloc[test_idx])
+        ytr = y_valid.iloc[train_idx].to_numpy(dtype=float)
+        yte = y_valid.iloc[test_idx].to_numpy(dtype=float)
+
+        if len(np.unique(ytr)) < 2:
+            continue
+
+        model.fit(Xtr, ytr)
+        yp = model.predict(Xte).astype(float)
+        # Clip to observed range +/- 1 step to handle MLP / SVR extrapolation
+        y_lo, y_hi = float(y_valid.min()), float(y_valid.max())
+        yp = np.clip(yp, y_lo - 0.5, y_hi + 0.5)
+
+        all_true.extend(yte)
+        all_pred.extend(yp)
+        fold_rmse.append(np.sqrt(mean_squared_error(yte, yp)))
+        fold_mae.append(mean_absolute_error(yte, yp))
+        fold_r2.append(r2_score(yte, yp) if len(np.unique(yte)) > 1 else np.nan)
+        rho, _ = st.spearmanr(yte, yp)
+        fold_spearman.append(rho if not np.isnan(rho) else 0.0)
+        last_Xte, last_yte = Xte, yte
+
+    return (
+        np.array(all_true), np.array(all_pred),
+        dict(rmse=fold_rmse, mae=fold_mae, r2=fold_r2, spearman=fold_spearman),
+        last_Xte, last_yte,
+    )
+
+
+def _print_one_regression_model(model_name, y_true, y_pred, folds,
+                                  target_col, is_ph):
+    """Print fold table + pooled metrics for one regression model.
+
+    Also computes rounded-to-class Kappa so results are comparable with
+    the classification baseline.
+    """
+    real_step, real_unit = MAE_REAL_UNITS.get(target_col, (1.0, "units"))
+
+    rmse_raw  = np.sqrt(mean_squared_error(y_true, y_pred))
+    mae_raw   = mean_absolute_error(y_true, y_pred)
+    r2        = r2_score(y_true, y_pred) if len(np.unique(y_true)) > 1 else np.nan
+    rho, _    = st.spearmanr(y_true, y_pred)
+
+    # Translate to real units
+    if is_ph:
+        rmse_real = rmse_raw          # already in pH units
+        mae_real  = mae_raw
+        unit_str  = "pH units"
+    else:
+        rmse_real = rmse_raw * real_step
+        mae_real  = mae_raw  * real_step
+        unit_str  = real_unit
+
+    # Round predictions to nearest valid class → Kappa for comparison
+    if is_ph:
+        ph_vals   = np.array(PH_VALUES)
+        n_classes = len(ph_vals)
+        # Map float pH → nearest CPR step index
+        y_true_cls = np.array([
+            int(np.argmin(np.abs(ph_vals - v))) for v in y_true
+        ])
+        y_pred_cls = np.array([
+            np.clip(int(np.round(np.argmin(np.abs(ph_vals - v)))), 0, n_classes - 1)
+            for v in y_pred
+        ])
+        # Simpler: round continuous prediction to index
+        # pred is already on a 0-10 float scale if we trained on ph index
+        # But we train on raw pH floats — convert back
+        y_pred_cls = np.array([
+            int(np.clip(np.argmin(np.abs(ph_vals - v)), 0, n_classes - 1))
+            for v in np.clip(y_pred, ph_vals[0], ph_vals[-1])
+        ])
+    else:
+        n_classes  = 3
+        y_true_cls = np.clip(np.round(y_true).astype(int), 0, n_classes - 1)
+        y_pred_cls = np.clip(np.round(y_pred).astype(int), 0, n_classes - 1)
+
+    kappa = cohen_kappa_score(y_true_cls, y_pred_cls) if len(np.unique(y_true_cls)) > 1 else 0.0
+    oa    = accuracy_score(y_true_cls, y_pred_cls)
+    kappa_lbl = ("Slight" if kappa < 0.20 else "Fair" if kappa < 0.40
+                 else "Moderate" if kappa < 0.60 else "Substantial"
+                 if kappa < 0.80 else "Almost Perfect")
+
+    print(f"\n  -- {model_name} --")
+    print(f"  {'Metric':<16} {'Mean':>7}  {'Std':>7}  {'95% CI':>12}")
+    print(f"  {'-'*46}")
+    for lbl, vals in [("RMSE", folds["rmse"]), ("MAE", folds["mae"]),
+                      ("R2", folds["r2"]), ("Spearman r", folds["spearman"])]:
+        clean = [v for v in vals if not np.isnan(v)]
+        if not clean:
+            print(f"  {lbl:<16} {'N/A':>7}")
+            continue
+        m, s, ci = np.mean(clean), np.std(clean), _ci95(clean)
+        print(f"  {lbl:<16} {m:>7.4f}  {s:>7.4f}  +/-{ci:>10.4f}")
+
+    print(f"\n  Pooled: RMSE={rmse_raw:.4f}  MAE={mae_raw:.4f} steps  "
+          f"(~{mae_real:.1f} {unit_str})  R2={r2:.4f}  rho={rho:.4f}")
+    print(f"  Rounded->class: OA={oa:.4f}  Kappa={kappa:.4f}({kappa_lbl})")
+
+    return {
+        "model": model_name, "target": target_col, "mode": "regression",
+        "rmse": round(rmse_raw, 4), "mae": round(mae_raw, 4),
+        "mae_real": round(mae_real, 2), "mae_real_unit": unit_str,
+        "r2": round(r2, 4) if not np.isnan(r2) else None,
+        "spearman_rho": round(rho, 4),
+        "rounded_oa": round(oa, 4), "rounded_kappa": round(kappa, 4),
+        "fold_rmse_mean": round(np.nanmean(folds["rmse"]), 4),
+        "fold_mae_mean":  round(np.nanmean(folds["mae"]),  4),
+        "fold_r2_mean":   round(np.nanmean([v for v in folds["r2"] if not np.isnan(v)] or [np.nan]), 4),
+        "fold_spearman_mean": round(np.nanmean(folds["spearman"]), 4),
+    }
+
+
+def plot_regression_scatter(y_true, y_pred, target_col, model_name,
+                             figures_dir, is_ph):
+    """Actual vs predicted scatter with BSWM class boundaries for N/P/K."""
+    fig, ax = plt.subplots(figsize=(6, 5))
+
+    ax.scatter(y_true, y_pred, alpha=0.4, s=18, color="steelblue", edgecolors="none")
+
+    # Perfect prediction line
+    lo = min(y_true.min(), y_pred.min()) - 0.1
+    hi = max(y_true.max(), y_pred.max()) + 0.1
+    ax.plot([lo, hi], [lo, hi], "k--", lw=1, label="Perfect")
+
+    if not is_ph:
+        # Draw BSWM class boundary bands
+        bounds = [0.5, 1.5]
+        for b in bounds:
+            ax.axvline(b, color="gray", lw=0.8, ls=":")
+            ax.axhline(b, color="gray", lw=0.8, ls=":")
+        ax.set_xticks([0, 1, 2])
+        ax.set_yticks([0, 1, 2])
+        ax.set_xticklabels(["Low", "Medium", "High"])
+        ax.set_yticklabels(["Low", "Medium", "High"])
+    else:
+        ax.set_xlabel("Actual pH")
+        ax.set_ylabel("Predicted pH")
+
+    rho, _ = st.spearmanr(y_true, y_pred)
+    r2     = r2_score(y_true, y_pred) if len(np.unique(y_true)) > 1 else float("nan")
+    ax.set_title(f"{target_col.upper()} [{model_name}]  "
+                 f"R²={r2:.3f}  rho={rho:.3f}", fontsize=10, fontweight="bold")
+    ax.set_xlabel(ax.get_xlabel() or "Actual")
+    ax.set_ylabel(ax.get_ylabel() or "Predicted")
+    plt.tight_layout()
+
+    os.makedirs(figures_dir, exist_ok=True)
+    path = os.path.join(figures_dir, f"regression_scatter_{target_col}_{model_name}.png")
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f"  Scatter plot saved: {path}")
+
+
+def train_and_evaluate_regression(df, X, groups, target_col, preprocessor,
+                                   num_features, cat_features,
+                                   figures_dir="outputs/figures",
+                                   min_groups_for_spatial_cv=4):
+    """Regression pipeline: XGBRegressor, RF, SVR, MLP with GroupKFold CV.
+
+    For N/P/K trains on the ordinal integer (0/1/2).
+    For pH trains on the raw float pH values.
+    """
+    ph_targets = df.attrs.get("ph_targets", [])
+    ph_values  = df.attrs.get("ph_values",  [])
+    is_ph      = target_col in ph_targets
+
+    print(f"\n{'='*60}")
+    print(f"  Target: {target_col.upper()}  [REGRESSION]"
+          + ("  (raw pH float)" if is_ph else "  (ordinal 0/1/2 -> real units)"))
+    print(f"{'='*60}")
+
+    valid_idx    = df[target_col].notna()
+    X_valid      = X[valid_idx]
+    groups_valid = groups[valid_idx]
+
+    # For pH: use raw float values from the CSV, not the integer index
+    if is_ph:
+        y_valid = df.loc[valid_idx, target_col].astype(float)
+    else:
+        y_valid = df.loc[valid_idx, target_col].astype(float)
+
+    n_groups = groups_valid.nunique()
+    if n_groups < min_groups_for_spatial_cv:
+        print(f"  Note: {n_groups} spatial group(s) — using 5-fold StratifiedKFold.")
+        cv       = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        # Stratify on rounded labels
+        y_strat  = np.clip(np.round(y_valid.to_numpy()).astype(int), 0, 10)
+        splitter = lambda X, y, g: cv.split(X, y_strat[: len(X)])
+    else:
+        n_splits = min(5, n_groups)
+        cv       = GroupKFold(n_splits=n_splits)
+        splitter = lambda X, y, g: cv.split(X, y, groups=g)
+
+    models  = _build_regression_models()
+    results = {}
+
+    for model_name, model in models.items():
+        print(f"\n  Training {model_name}...")
+        y_true, y_pred, folds, last_Xte, last_yte = _run_one_regression_model(
+            model, model_name, X_valid, y_valid, groups_valid, preprocessor, splitter,
+        )
+        if len(y_true) == 0:
+            print(f"  WARNING: no folds completed for {model_name} — skipping.")
+            continue
+
+        metrics_dict = _print_one_regression_model(
+            model_name, y_true, y_pred, folds, target_col, is_ph,
+        )
+        results[model_name] = metrics_dict
+
+        plot_regression_scatter(y_true, y_pred, target_col, model_name,
+                                figures_dir, is_ph)
+
+        # Feature importance (XGB/RF only — SVR/MLP via permutation)
+        if last_Xte is not None:
+            try:
+                plot_feature_importance(
+                    model, model_name, last_Xte, last_yte,
+                    preprocessor, num_features, cat_features,
+                    f"{target_col}_reg", figures_dir,
+                )
+            except Exception:
+                pass
+
+    if results:
+        best = max(results, key=lambda n: results[n]["spearman_rho"])
+        print(f"\n  Best for {target_col}: {best} "
+              f"(rho={results[best]['spearman_rho']:.4f}  "
+              f"Kappa={results[best]['rounded_kappa']:.4f})")
+
+    return list(results.values())
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -1116,6 +1405,10 @@ if __name__ == "__main__":
                         help="Number of Optuna trials per model (default: 50).")
     parser.add_argument("--filter-barangay", metavar="NAME",
                         help="Train on a single barangay only (e.g. Paoay).")
+    parser.add_argument("--regression", action="store_true",
+                        help="Train regressors (XGBoost, RF, SVR, MLP) on the raw ordinal "
+                             "targets instead of classifiers. Reports RMSE, MAE, R2, Spearman "
+                             "rho, and rounded-to-class Kappa for comparison.")
     args = parser.parse_args()
 
     if not os.path.isfile(args.data_path):
@@ -1146,17 +1439,25 @@ if __name__ == "__main__":
     for t in targets:
         if t not in df.columns:
             continue
-        _, metrics_list, imp_by_model = train_and_evaluate(
-            df, X, groups, t, preprocessor,
-            num_feat, cat_feat, figures_dir=args.figures_dir,
-            use_smote=args.smote,
-            min_groups_for_spatial_cv=args.min_groups_spatial_cv,
-            use_optuna=args.tune,
-            optuna_trials=args.optuna_trials,
-        )
-        all_results.extend(metrics_list)
-        for model_name, (feat_names, imps) in imp_by_model.items():
-            all_importances[(t, model_name)] = (feat_names, imps)
+        if args.regression:
+            metrics_list = train_and_evaluate_regression(
+                df, X, groups, t, preprocessor,
+                num_feat, cat_feat, figures_dir=args.figures_dir,
+                min_groups_for_spatial_cv=args.min_groups_spatial_cv,
+            )
+            all_results.extend(metrics_list)
+        else:
+            _, metrics_list, imp_by_model = train_and_evaluate(
+                df, X, groups, t, preprocessor,
+                num_feat, cat_feat, figures_dir=args.figures_dir,
+                use_smote=args.smote,
+                min_groups_for_spatial_cv=args.min_groups_spatial_cv,
+                use_optuna=args.tune,
+                optuna_trials=args.optuna_trials,
+            )
+            all_results.extend(metrics_list)
+            for model_name, (feat_names, imps) in imp_by_model.items():
+                all_importances[(t, model_name)] = (feat_names, imps)
 
     if all_results:
         save_summary_table(all_results, out_dir=args.output_dir)
