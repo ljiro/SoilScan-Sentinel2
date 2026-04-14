@@ -763,7 +763,7 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
         all_pixels:  Emit all 9 neighbourhood pixels as rows (default: False).
     """
     df = pd.read_csv(csv_path)
-    df["capture_datetime"] = pd.to_datetime(df["capture_datetime"])
+    df["capture_datetime"] = pd.to_datetime(df["capture_datetime"], format="mixed", utc=True)
     df["_capture_date"] = df["capture_datetime"].dt.date
 
     # Drop rows with missing coordinates — they produce NaN WKT and 400 errors

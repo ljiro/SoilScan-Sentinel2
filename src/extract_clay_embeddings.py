@@ -81,62 +81,165 @@ L8_BANDS = {
     "B7":  (2200, 30),
 }
 
-EMBED_DIM = 768
+# Clay v1.5 (large) produces 1024-dim CLS-token embeddings
+EMBED_DIM = 1024
+
+# Clay metadata for Sentinel-2 L2A — matches configs/metadata.yaml in the repo
+# Band order must follow Clay's expected sequence for the sentinel-2-l2a platform
+CLAY_S2_BANDS = {
+    # band_file: (clay_band_name, wavelength_um, gsd_m, dn_mean, dn_std)
+    "B02": ("blue",      0.493, 10, 1105.0, 1809.0),
+    "B03": ("green",     0.560, 10, 1355.0, 1757.0),
+    "B04": ("red",       0.665, 10, 1552.0, 1888.0),
+    "B05": ("rededge1",  0.704, 20, 1887.0, 1870.0),
+    "B06": ("rededge2",  0.740, 20, 2422.0, 1732.0),
+    "B07": ("rededge3",  0.783, 20, 2630.0, 1697.0),
+    "B08": ("nir",       0.842, 10, 2743.0, 1742.0),
+    "B8A": ("nir08",     0.865, 20, 2785.0, 1648.0),
+    "B11": ("swir16",    1.610, 20, 2388.0, 1470.0),
+    "B12": ("swir22",    2.190, 20, 1835.0, 1379.0),
+}
 
 
 # ---------------------------------------------------------------------------
 # Clay model loader
 # ---------------------------------------------------------------------------
 
+def _ensure_clay_source():
+    """Download Clay model source + configs from GitHub to a local cache.
+
+    The HuggingFace repo (made-with-clay/Clay) only contains the checkpoint.
+    The model code lives in the GitHub repo (Clay-foundation/model) under
+    the claymodel/ package directory.
+    """
+    cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".clay_src")
+    claymodel_dir = os.path.join(cache_dir, "claymodel")
+    configs_dir   = os.path.join(cache_dir, "configs")
+    os.makedirs(claymodel_dir, exist_ok=True)
+    os.makedirs(configs_dir,   exist_ok=True)
+
+    # Already cached if model.py is present
+    if os.path.exists(os.path.join(claymodel_dir, "model.py")):
+        return cache_dir
+
+    print("  Fetching Clay source code from GitHub...")
+    gh_base = "https://api.github.com/repos/Clay-foundation/model/contents/"
+    raw_base = "https://raw.githubusercontent.com/Clay-foundation/model/main/"
+
+    # Download all .py files under claymodel/
+    resp = requests.get(gh_base + "claymodel", timeout=30)
+    resp.raise_for_status()
+    for entry in resp.json():
+        if entry.get("type") == "file" and entry["name"].endswith(".py"):
+            dest = os.path.join(claymodel_dir, entry["name"])
+            if not os.path.exists(dest):
+                print(f"    -> claymodel/{entry['name']}")
+                r = requests.get(entry["download_url"], timeout=30)
+                r.raise_for_status()
+                with open(dest, "w", encoding="utf-8") as f:
+                    f.write(r.text)
+
+    # Create __init__.py if missing so it's importable as a package
+    init_py = os.path.join(claymodel_dir, "__init__.py")
+    if not os.path.exists(init_py):
+        open(init_py, "w").close()
+
+    # Download configs/metadata.yaml (needed by ClayMAEModule)
+    meta_dest = os.path.join(configs_dir, "metadata.yaml")
+    if not os.path.exists(meta_dest):
+        print("    -> configs/metadata.yaml")
+        r = requests.get(raw_base + "configs/metadata.yaml", timeout=30)
+        r.raise_for_status()
+        with open(meta_dest, "w", encoding="utf-8") as f:
+            f.write(r.text)
+
+    print(f"  Clay source cached at: {cache_dir}")
+    return cache_dir
+
+
+def _normalize_timestamp(dt):
+    """Return (week_norm, hour_norm) each as np.array([sin, cos]) for Clay datacube."""
+    import math
+    doy  = dt.timetuple().tm_yday
+    week = doy / 7.0
+    hour = dt.hour
+    return (
+        np.array([math.sin(2*math.pi*week/52), math.cos(2*math.pi*week/52)], dtype=np.float32),
+        np.array([math.sin(2*math.pi*hour/24), math.cos(2*math.pi*hour/24)], dtype=np.float32),
+    )
+
+
+def _normalize_latlon(lat, lon):
+    """Return (lat_norm, lon_norm) each as np.array([sin, cos]) for Clay datacube."""
+    import math
+    return (
+        np.array([math.sin(lat*math.pi/180), math.cos(lat*math.pi/180)], dtype=np.float32),
+        np.array([math.sin(lon*math.pi/180), math.cos(lon*math.pi/180)], dtype=np.float32),
+    )
+
+
 def _load_clay_model(device="cpu"):
     """Download and initialise Clay v1.5 encoder.
 
-    Clay's architecture is not registered in HuggingFace transformers, so we
-    load its code dynamically from the GitHub source tree bundled in the
-    HuggingFace repo.  The checkpoint is ~1.1 GB and is cached after first
-    download.
+    The checkpoint (~1.1 GB) is fetched via HuggingFace Hub.
+    The model source code (claymodel package) is fetched from GitHub since the
+    HF repo only holds the checkpoint.
+
+    The teacher model (ViT-L DINOv2, ~1.1 GB) is monkey-patched with a
+    lightweight dummy so it is not downloaded — we only need the encoder
+    for inference, never the teacher.
     """
     import torch
-    from huggingface_hub import hf_hub_download, snapshot_download
+    from huggingface_hub import hf_hub_download
 
     print("  Loading Clay v1.5 model...")
-
-    # Download checkpoint
     ckpt_path = hf_hub_download(CLAY_REPO, CLAY_CKPT)
     print(f"  Checkpoint: {ckpt_path}")
 
-    # Clay source is in the HF repo — snapshot gives us the full tree
-    repo_dir = snapshot_download(CLAY_REPO)
+    clay_src    = _ensure_clay_source()
+    configs_dir = os.path.join(clay_src, "configs")
 
-    # Insert Clay src into path so we can import it
-    clay_src = os.path.join(repo_dir, "src")
-    if clay_src not in sys.path and os.path.isdir(clay_src):
+    # Add cache dir to sys.path so `from claymodel.xxx import` works
+    if clay_src not in sys.path:
         sys.path.insert(0, clay_src)
 
     try:
-        from model import Clay  # Clay's own model.py
-        ckpt  = torch.load(ckpt_path, map_location=device)
-        state = ckpt.get("state_dict", ckpt)
-        # Strip "model." prefix if present (Lightning convention)
-        state = {k.replace("model.", "", 1): v for k, v in state.items()}
-        model = Clay()
-        model.load_state_dict(state, strict=False)
+        import timm as _timm
+        _orig_create_model = _timm.create_model
+
+        # Dummy teacher avoids downloading the 1.1 GB ViT-L DINOv2 model.
+        # We only call model.model.encoder(), never the teacher branch.
+        def _dummy_teacher(name, **kwargs):
+            class _DT(torch.nn.Module):
+                num_features = 1024
+                def forward(self, x):
+                    return torch.zeros(x.shape[0], 1024, device=x.device)
+            return _DT()
+
+        _timm.create_model = _dummy_teacher
+
+        from claymodel.module import ClayMAEModule
+        model = ClayMAEModule.load_from_checkpoint(
+            ckpt_path,
+            metadata_path=os.path.join(configs_dir, "metadata.yaml"),
+            shuffle=False,
+            mask_ratio=0.0,
+            map_location=device,
+        )
         model.eval().to(device)
+        _timm.create_model = _orig_create_model
         print(f"  Clay loaded OK on {device}")
         return model
-    except ImportError:
-        # Fallback: use Clay's transformers-compatible encoder if available
+
+    except Exception as e:
         try:
-            from transformers import AutoModel
-            model = AutoModel.from_pretrained(CLAY_REPO, trust_remote_code=True)
-            model.eval().to(device)
-            print(f"  Clay (AutoModel) loaded on {device}")
-            return model
-        except Exception as e:
-            raise RuntimeError(
-                f"Could not load Clay model: {e}\n"
-                "Try: pip install torch torchvision einops timm"
-            ) from e
+            _timm.create_model = _orig_create_model
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"Could not load Clay model: {e}\n"
+            "Try: pip install torch torchvision einops timm lightning python-box"
+        ) from e
 
 
 # ---------------------------------------------------------------------------
@@ -206,15 +309,26 @@ def _lonlat_to_rowcol(src, lon, lat):
     return rowcol(src.transform, x, y)
 
 
-def _extract_s2_patch(safe_path, lat, lon, patch_px=PATCH_SIZE):
+def _extract_s2_patch(safe_path, lat, lon, patch_px=PATCH_SIZE, raw=False):
     """Extract a (C, H, W) Sentinel-2 patch centred on (lat, lon).
+
+    Args:
+        raw: if True return raw DN values (0-20000); if False return reflectance
+             (dn/10000 - 0.1, clipped to [0,1]).  Use raw=True for Clay embeddings
+             since Clay normalises with its own per-band mean/std in DN units.
 
     Returns (patch_np, wavelengths_nm, gsd_m) or None if point is outside tile.
     """
     import glob
     bands_out, waves, gsds = [], [], []
 
-    for band_name, (wl, gsd) in S2_BANDS.items():
+    # Use Clay's expected band order when raw=True, otherwise legacy S2_BANDS order
+    band_iter = (
+        {b: (info[1]*1000, info[2]) for b, info in CLAY_S2_BANDS.items()}.items()
+        if raw else S2_BANDS.items()
+    )
+
+    for band_name, (wl, gsd) in band_iter:
         # Find the band file at the right resolution
         res = f"{gsd}m"
         pattern = os.path.join(safe_path, f"**/*{band_name}_{res}.jp2")
@@ -239,9 +353,10 @@ def _extract_s2_patch(safe_path, lat, lon, patch_px=PATCH_SIZE):
                     pad_h = patch_px - data.shape[0]
                     pad_w = patch_px - data.shape[1]
                     data = np.pad(data, ((0, pad_h), (0, pad_w)), mode="reflect")
-                # Normalise to [0, 1] using S2 L2A reflectance scale.
-                # Processing baseline N0400+ uses offset -1000 DN (= -0.1 reflectance).
-                data = np.clip(data / 10000.0 - 0.1, 0, 1)
+                # Normalise unless caller wants raw DN for Clay's own normalization.
+                # N0400+ baseline uses -1000 DN offset (= -0.1 reflectance).
+                if not raw:
+                    data = np.clip(data / 10000.0 - 0.1, 0, 1)
                 bands_out.append(data)
                 waves.append(wl)
                 gsds.append(gsd)
@@ -457,41 +572,52 @@ def extract_patch_stats(df, source="sentinel2"):
 # Embedding extraction (Clay model — requires ~5 GB disk + torch)
 # ---------------------------------------------------------------------------
 
-def _embed_patch(model, patch, wavelengths, gsds, lat, lon, device="cpu"):
-    """Run a single patch through the Clay encoder, return (768,) embedding."""
+def _embed_patch(model, patch_dn, wavelengths_nm, lat, lon, dt, device="cpu"):
+    """Run a patch through the Clay v1.5 encoder, return (1024,) CLS embedding.
+
+    Args:
+        patch_dn:       (C, H, W) float32 — raw S2 DN values (pre-normalisation)
+        wavelengths_nm: (C,) float32 — wavelengths in nanometres
+        dt:             datetime of the tile acquisition
+    """
     import torch
 
-    # Clay DOFA expects:
-    #   pixels     : (1, C, H, W) float32 tensor, normalised [0,1]
-    #   wavelengths: (1, C) float32 tensor in nm
-    #   gsd        : (1,) float32 — ground sample distance in metres
-    #   latlon     : (1, 2) float32
-    pixels = torch.from_numpy(patch[None]).float().to(device)        # (1,C,H,W)
-    waves  = torch.from_numpy(wavelengths[None]).float().to(device)  # (1,C)
-    gsd    = torch.tensor([[gsds.mean()]], dtype=torch.float32).to(device)
-    ll     = torch.tensor([[lat, lon]], dtype=torch.float32).to(device)
+    C = patch_dn.shape[0]
+
+    # Clay normalisation: (dn - band_mean) / band_std  (per-band, in DN units)
+    means = np.array([info[3] for info in list(CLAY_S2_BANDS.values())[:C]], dtype=np.float32)
+    stds  = np.array([info[4] for info in list(CLAY_S2_BANDS.values())[:C]], dtype=np.float32)
+    patch_norm = (patch_dn - means[:, None, None]) / stds[:, None, None]
+
+    # Wavelengths in micrometers (Clay expects μm, not nm)
+    waves_um = wavelengths_nm / 1000.0
+
+    # Time and location encodings
+    week_norm, hour_norm = _normalize_timestamp(dt)
+    lat_norm,  lon_norm  = _normalize_latlon(lat, lon)
+
+    pixels  = torch.from_numpy(patch_norm[None]).float().to(device)           # (1,C,H,W)
+    time_t  = torch.tensor(np.hstack((week_norm, hour_norm)),
+                            dtype=torch.float32, device=device).unsqueeze(0)  # (1,4)
+    latlon_t = torch.tensor(np.hstack((lat_norm, lon_norm)),
+                             dtype=torch.float32, device=device).unsqueeze(0) # (1,4)
+    gsd_t   = torch.tensor(10.0, device=device)                               # S2 primary GSD
+    waves_t = torch.tensor(waves_um, dtype=torch.float32, device=device)      # (C,)
+
+    datacube = {
+        "pixels": pixels,
+        "time":   time_t,
+        "latlon": latlon_t,
+        "gsd":    gsd_t,
+        "waves":  waves_t,
+    }
 
     with torch.no_grad():
-        try:
-            # Clay's own API
-            out = model.encode(pixels, waves, gsd, ll)
-        except AttributeError:
-            try:
-                out = model(pixels, wavelengths=waves, gsd=gsd, latlon=ll)
-            except Exception:
-                # Last resort: raw forward pass
-                out = model(pixels)
+        # Call only the encoder branch — teacher is never invoked
+        unmsk_patch, _, _, _ = model.model.encoder(datacube)
 
-    # out may be (1, tokens, embed_dim) — take mean over tokens (CLS + patches)
-    if isinstance(out, torch.Tensor):
-        emb = out.squeeze(0)
-        if emb.ndim == 2:
-            emb = emb.mean(dim=0)
-        return emb.cpu().numpy()
-    # Some versions return a dict
-    if hasattr(out, "last_hidden_state"):
-        return out.last_hidden_state[0].mean(dim=0).cpu().numpy()
-    raise ValueError(f"Unexpected Clay output type: {type(out)}")
+    # CLS token is at index 0 → (1024,) embedding
+    return unmsk_patch[:, 0, :].squeeze(0).cpu().numpy()
 
 
 def extract_embeddings(df, source="both", device="cpu"):
@@ -529,11 +655,11 @@ def extract_embeddings(df, source="both", device="cpu"):
         key = (lats[i], lons[i])
         patch_data = None
 
-        # Try Sentinel-2 first
+        # Try Sentinel-2 first — raw=True returns DN values for Clay's normalisation
         if source in ("sentinel2", "both"):
             safe = pt_to_s2.get(key)
             if safe:
-                patch_data = _extract_s2_patch(safe, lats[i], lons[i])
+                patch_data = _extract_s2_patch(safe, lats[i], lons[i], raw=True)
 
         # Fall back to / also try Landsat
         if patch_data is None and source in ("landsat", "both"):
@@ -546,8 +672,24 @@ def extract_embeddings(df, source="both", device="cpu"):
 
         try:
             patch, wavelengths, gsds = patch_data
+            # Resolve acquisition datetime for time encoding
+            dt_col = None
+            for col in ("capture_datetime", "date", "datetime"):
+                if col in df.columns:
+                    dt_col = col
+                    break
+            import datetime as _dt_mod
+            if dt_col:
+                raw_dt = df.iloc[i][dt_col]
+                try:
+                    tile_dt = pd.to_datetime(raw_dt).to_pydatetime()
+                except Exception:
+                    tile_dt = _dt_mod.datetime(2025, 10, 15)
+            else:
+                tile_dt = _dt_mod.datetime(2025, 10, 15)
+
             embeddings[i] = _embed_patch(
-                model, patch, wavelengths, gsds, lats[i], lons[i], device
+                model, patch, wavelengths, lats[i], lons[i], tile_dt, device
             )
         except Exception as exc:
             print(f"  WARNING row {i}: embedding failed — {exc}")
