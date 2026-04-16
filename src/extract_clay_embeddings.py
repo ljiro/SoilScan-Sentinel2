@@ -179,66 +179,62 @@ def _normalize_latlon(lat, lon):
 
 
 def _load_clay_model(device="cpu"):
-    """Download and initialise Clay v1.5 encoder.
+    """Download and initialise the Clay v1.5 encoder (Encoder class only).
 
-    The checkpoint (~1.1 GB) is fetched via HuggingFace Hub.
-    The model source code (claymodel package) is fetched from GitHub since the
-    HF repo only holds the checkpoint.
+    Bypasses Lightning / ClayMAEModule entirely to avoid the Lightning CLI
+    instantiation bug and the 1.1 GB teacher-model download.  We load only
+    the encoder branch of the checkpoint — that is all we need for inference.
 
-    The teacher model (ViT-L DINOv2, ~1.1 GB) is monkey-patched with a
-    lightweight dummy so it is not downloaded — we only need the encoder
-    for inference, never the teacher.
+    Confirmed from checkpoint inspection:
+      - model_size: large  (dim=1024, depth=24, heads=16)
+      - encoder keys:  model.encoder.*
+      - cls_token shape: [1, 1, 1024]
     """
     import torch
     from huggingface_hub import hf_hub_download
 
-    print("  Loading Clay v1.5 model...")
+    print("  Loading Clay v1.5 encoder...")
     ckpt_path = hf_hub_download(CLAY_REPO, CLAY_CKPT)
     print(f"  Checkpoint: {ckpt_path}")
 
-    clay_src    = _ensure_clay_source()
-    configs_dir = os.path.join(clay_src, "configs")
-
-    # Add cache dir to sys.path so `from claymodel.xxx import` works
+    clay_src = _ensure_clay_source()
     if clay_src not in sys.path:
         sys.path.insert(0, clay_src)
 
     try:
-        import timm as _timm
-        _orig_create_model = _timm.create_model
+        from claymodel.model import Encoder
 
-        # Dummy teacher avoids downloading the 1.1 GB ViT-L DINOv2 model.
-        # We only call model.model.encoder(), never the teacher branch.
-        def _dummy_teacher(name, **kwargs):
-            class _DT(torch.nn.Module):
-                num_features = 1024
-                def forward(self, x):
-                    return torch.zeros(x.shape[0], 1024, device=x.device)
-            return _DT()
-
-        _timm.create_model = _dummy_teacher
-
-        from claymodel.module import ClayMAEModule
-        model = ClayMAEModule.load_from_checkpoint(
-            ckpt_path,
-            metadata_path=os.path.join(configs_dir, "metadata.yaml"),
-            shuffle=False,
+        # Instantiate the large-model encoder with mask_ratio=0 for inference
+        # (all patches visible → CLS token encodes the full patch context)
+        encoder = Encoder(
             mask_ratio=0.0,
-            map_location=device,
+            patch_size=8,
+            shuffle=False,
+            dim=1024,
+            depth=24,
+            heads=16,
+            dim_head=64,
+            mlp_ratio=4,
         )
-        model.eval().to(device)
-        _timm.create_model = _orig_create_model
-        print(f"  Clay loaded OK on {device}")
-        return model
+
+        ckpt      = torch.load(ckpt_path, map_location=device, weights_only=False)
+        state     = ckpt["state_dict"]
+        enc_state = {
+            k[len("model.encoder."):]: v
+            for k, v in state.items()
+            if k.startswith("model.encoder.")
+        }
+        missing, unexpected = encoder.load_state_dict(enc_state, strict=True)
+        if missing:
+            print(f"  WARNING: missing keys: {missing[:3]}")
+        encoder.eval().to(device)
+        print(f"  Clay encoder loaded OK on {device}  (dim=1024, depth=24)")
+        return encoder
 
     except Exception as e:
-        try:
-            _timm.create_model = _orig_create_model
-        except Exception:
-            pass
         raise RuntimeError(
-            f"Could not load Clay model: {e}\n"
-            "Try: pip install torch torchvision einops timm lightning python-box"
+            f"Could not load Clay encoder: {e}\n"
+            "Try: pip install torch torchvision einops timm"
         ) from e
 
 
@@ -613,8 +609,8 @@ def _embed_patch(model, patch_dn, wavelengths_nm, lat, lon, dt, device="cpu"):
     }
 
     with torch.no_grad():
-        # Call only the encoder branch — teacher is never invoked
-        unmsk_patch, _, _, _ = model.model.encoder(datacube)
+        # model IS the Encoder — call it directly
+        unmsk_patch, _, _, _ = model(datacube)
 
     # CLS token is at index 0 → (1024,) embedding
     return unmsk_patch[:, 0, :].squeeze(0).cpu().numpy()
