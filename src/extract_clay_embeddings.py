@@ -364,6 +364,103 @@ def _extract_s2_patch(safe_path, lat, lon, patch_px=PATCH_SIZE, raw=False):
     return np.stack(bands_out), np.array(waves, dtype=np.float32), np.array(gsds, dtype=np.float32)
 
 
+# SCL class values (S2 L2A Scene Classification Layer)
+# https://sentinels.copernicus.eu/web/sentinel/technical-guides/sentinel-2-msi/level-2a/algorithm
+_SCL_VEGETATION    = 4
+_SCL_BARE_SOIL     = 5
+_SCL_WATER         = 6
+_SCL_CLOUD_SHADOW  = 3
+_SCL_CLOUD_MED     = 8
+_SCL_CLOUD_HIGH    = 9
+_SCL_CIRRUS        = 10
+_SCL_SNOW          = 11
+_SCL_NO_DATA       = 0
+
+
+def _extract_scl_patch(safe_path, lat, lon, patch_px=PATCH_SIZE):
+    """Extract the SCL (Scene Classification Layer) patch centred on (lat, lon).
+
+    SCL is available at 20 m in S2 L2A products.  Returns a (H, W) uint8 array
+    or None if the band is not found.
+    """
+    import glob as _glob
+    patterns = [
+        os.path.join(safe_path, "**/*SCL_20m.jp2"),
+        os.path.join(safe_path, "**/*SCL.jp2"),
+        os.path.join(safe_path, "**/*SCL*.jp2"),
+    ]
+    scl_files = []
+    for pat in patterns:
+        scl_files = _glob.glob(pat, recursive=True)
+        if scl_files:
+            break
+    if not scl_files:
+        return None
+    try:
+        with rasterio.open(scl_files[0]) as src:
+            row, col = _lonlat_to_rowcol(src, lon, lat)
+            half = patch_px // 2
+            window = rasterio.windows.Window(col - half, row - half, patch_px, patch_px)
+            data = src.read(1, window=window)
+            if data.shape != (patch_px, patch_px):
+                pad_h = patch_px - data.shape[0]
+                pad_w = patch_px - data.shape[1]
+                data = np.pad(data, ((0, pad_h), (0, pad_w)), mode="constant", constant_values=0)
+        return data.astype(np.uint8)
+    except Exception:
+        return None
+
+
+def _patch_quality(patch_reflectance, scl=None):
+    """Compute vegetation quality metrics for a (C, H, W) reflectance patch.
+
+    Returns a dict with:
+        ndvi_mean     — mean NDVI over the patch (-1 to 1)
+        ndvi_p75      — 75th-percentile NDVI (better indicator than mean)
+        veg_fraction  — fraction of pixels with NDVI > 0.2
+        cloud_frac    — fraction of pixels classified as cloud/shadow by SCL
+        valid_frac    — fraction of pixels classified as usable (veg/soil/water)
+        scl_available — whether SCL data was provided
+    """
+    # Find B08 (NIR) and B04 (Red) by position in S2_BAND_NAMES
+    band_names = S2_BAND_NAMES
+    try:
+        idx_nir = band_names.index("B08")
+        idx_red = band_names.index("B04")
+        nir = patch_reflectance[idx_nir].astype(np.float32)
+        red = patch_reflectance[idx_red].astype(np.float32)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            ndvi = (nir - red) / (nir + red + 1e-9)
+        ndvi_mean = float(np.nanmean(ndvi))
+        ndvi_p75  = float(np.nanpercentile(ndvi, 75))
+        veg_frac  = float(np.nanmean(ndvi > 0.2))
+    except (ValueError, IndexError):
+        ndvi_mean = float("nan")
+        ndvi_p75  = float("nan")
+        veg_frac  = float("nan")
+
+    if scl is not None:
+        cloud_mask = np.isin(scl, [_SCL_CLOUD_SHADOW, _SCL_CLOUD_MED,
+                                    _SCL_CLOUD_HIGH,   _SCL_CIRRUS])
+        valid_mask = np.isin(scl, [_SCL_VEGETATION, _SCL_BARE_SOIL, _SCL_WATER])
+        cloud_frac = float(np.mean(cloud_mask))
+        valid_frac = float(np.mean(valid_mask))
+        scl_ok     = True
+    else:
+        cloud_frac = float("nan")
+        valid_frac = float("nan")
+        scl_ok     = False
+
+    return {
+        "quality_ndvi_mean":  ndvi_mean,
+        "quality_ndvi_p75":   ndvi_p75,
+        "quality_veg_frac":   veg_frac,
+        "quality_cloud_frac": cloud_frac,
+        "quality_valid_frac": valid_frac,
+        "quality_scl_ok":     scl_ok,
+    }
+
+
 def _find_landsat_for_point(lat, lon, landsat_root):
     """Return the Landsat scene directory covering (lat, lon)."""
     from rasterio.crs import CRS
@@ -505,6 +602,10 @@ def extract_patch_stats(df, source="sentinel2"):
     n_feats = len(_patch_stats(dummy, S2_BAND_NAMES))
     features = np.full((n, n_feats), np.nan, dtype=np.float32)
 
+    # Quality metric accumulators (filled alongside patch stats)
+    quality_cols: list = []
+    quality_data: dict = {}
+
     # Map unique GPS points to scene files
     unique_pts = pd.DataFrame({"lat": lats, "lon": lons}).drop_duplicates()
     pt_to_s2   = {}
@@ -546,6 +647,17 @@ def extract_patch_stats(df, source="sentinel2"):
 
         try:
             patch, _, _ = patch_data
+
+            # Vegetation / cloud quality check using SCL band
+            safe = pt_to_s2.get(key) if source in ("sentinel2", "both") else None
+            scl  = _extract_scl_patch(safe, lats[i], lons[i]) if safe else None
+            quality = _patch_quality(patch, scl)
+            for qk, qv in quality.items():
+                if qk not in quality_cols:
+                    quality_cols.append(qk)
+                    quality_data[qk] = np.full(n, np.nan, dtype=np.float32)
+                quality_data[qk][i] = float(qv)
+
             stats = _patch_stats(patch, band_names)
             # Pad/trim to match expected feature count
             if len(stats) > n_feats:
@@ -561,7 +673,25 @@ def extract_patch_stats(df, source="sentinel2"):
             print(f"  Progress: {i+1}/{n}  processed={ok}", end="\r")
 
     print()
-    return features, n_feats
+
+    # Print quality summary
+    if "quality_ndvi_mean" in quality_data:
+        ndvi_vals = quality_data["quality_ndvi_mean"]
+        valid = ndvi_vals[~np.isnan(ndvi_vals)]
+        if len(valid):
+            print(f"  Quality summary ({len(valid)} patches with SCL/NDVI data):")
+            print(f"    NDVI mean  : {valid.mean():.3f}  (min {valid.min():.3f}, max {valid.max():.3f})")
+        if "quality_veg_frac" in quality_data:
+            vf = quality_data["quality_veg_frac"]
+            vf_valid = vf[~np.isnan(vf)]
+            print(f"    Veg frac   : {vf_valid.mean():.2%} of pixels have NDVI > 0.2")
+        if "quality_cloud_frac" in quality_data:
+            cf = quality_data["quality_cloud_frac"]
+            cf_valid = cf[~np.isnan(cf)]
+            if len(cf_valid):
+                print(f"    Cloud frac : {cf_valid.mean():.2%} mean (SCL-based)")
+
+    return features, n_feats, quality_cols, quality_data
 
 
 # ---------------------------------------------------------------------------
@@ -822,6 +952,15 @@ def main():
                         help="Input CSV (default: field_data_with_terrain.csv or field_data_with_bands.csv).")
     parser.add_argument("--output", default=None,
                         help="Output CSV path (default: data/processed/field_data_with_clay.csv).")
+    parser.add_argument("--min-ndvi", type=float, default=None, metavar="FLOAT",
+                        help="Drop patches where mean NDVI < threshold (e.g. 0.2). "
+                             "Useful to exclude bare soil / cloud-covered patches.")
+    parser.add_argument("--min-veg-frac", type=float, default=None, metavar="FLOAT",
+                        help="Drop patches where the fraction of pixels with NDVI > 0.2 "
+                             "is below this threshold (e.g. 0.3 = at least 30%% vegetated).")
+    parser.add_argument("--max-cloud-frac", type=float, default=None, metavar="FLOAT",
+                        help="Drop patches where SCL cloud fraction exceeds this threshold "
+                             "(e.g. 0.1 = reject if more than 10%% of pixels are cloud/shadow).")
     args = parser.parse_args()
 
     out_csv = args.output or OUTPUT_CSV
@@ -852,7 +991,7 @@ def main():
     # 3. Extract features
     if args.source == "patch-stats":
         print("3. Extracting patch-level statistics from S2 imagery (no model required)...")
-        features, n_feats = extract_patch_stats(df, source="sentinel2")
+        features, n_feats, quality_cols, quality_data = extract_patch_stats(df, source="sentinel2")
 
         n_ok = int(np.sum(~np.isnan(features[:, 0])))
         print(f"   Processed: {n_ok}/{len(df)} rows ({n_ok/len(df)*100:.1f}%)  features={n_feats}")
@@ -861,6 +1000,33 @@ def main():
             print("\n  ERROR: No patch statistics extracted.")
             print("  Check that Sentinel-2 .SAFE files exist in data/raw/field_products/")
             sys.exit(1)
+
+        # Apply optional vegetation / cloud quality filters
+        min_ndvi    = getattr(args, "min_ndvi",    None)
+        min_veg_frac = getattr(args, "min_veg_frac", None)
+        max_cloud   = getattr(args, "max_cloud_frac", None)
+        if any(v is not None for v in [min_ndvi, min_veg_frac, max_cloud]):
+            mask = np.ones(len(df), dtype=bool)
+            if min_ndvi is not None and "quality_ndvi_mean" in quality_data:
+                ndvi_arr = quality_data["quality_ndvi_mean"]
+                mask &= (ndvi_arr >= min_ndvi) | np.isnan(ndvi_arr)
+                n_dropped = int(np.sum(~np.isnan(ndvi_arr) & (ndvi_arr < min_ndvi)))
+                print(f"   Filter --min-ndvi {min_ndvi}: dropped {n_dropped} low-vegetation rows")
+            if min_veg_frac is not None and "quality_veg_frac" in quality_data:
+                vf_arr = quality_data["quality_veg_frac"]
+                mask &= (vf_arr >= min_veg_frac) | np.isnan(vf_arr)
+                n_dropped = int(np.sum(~np.isnan(vf_arr) & (vf_arr < min_veg_frac)))
+                print(f"   Filter --min-veg-frac {min_veg_frac}: dropped {n_dropped} rows")
+            if max_cloud is not None and "quality_cloud_frac" in quality_data:
+                cf_arr = quality_data["quality_cloud_frac"]
+                mask &= (cf_arr <= max_cloud) | np.isnan(cf_arr)
+                n_dropped = int(np.sum(~np.isnan(cf_arr) & (cf_arr > max_cloud)))
+                print(f"   Filter --max-cloud-frac {max_cloud}: dropped {n_dropped} cloudy rows")
+            df       = df[mask].reset_index(drop=True)
+            features = features[mask]
+            for qk in quality_cols:
+                quality_data[qk] = quality_data[qk][mask]
+            print(f"   After filters: {len(df)} rows remaining")
 
         # Column names: <band>_mean/std/p25/p75/p95, then indices, then <band>_var
         stat_names = []
@@ -877,8 +1043,9 @@ def main():
         feat_cols  = stat_names[:n_feats]
 
         print("4. Merging patch statistics into dataset...")
-        feat_df = pd.DataFrame(features[:, :n_feats], columns=feat_cols)
-        df_out  = pd.concat([df.reset_index(drop=True), feat_df], axis=1)
+        feat_df  = pd.DataFrame(features[:, :n_feats], columns=feat_cols)
+        qual_df  = pd.DataFrame({qk: quality_data[qk] for qk in quality_cols}) if quality_cols else pd.DataFrame()
+        df_out   = pd.concat([df.reset_index(drop=True), feat_df, qual_df], axis=1)
 
         os.makedirs(os.path.dirname(out_csv), exist_ok=True)
         df_out.to_csv(out_csv, index=False, quoting=1)
