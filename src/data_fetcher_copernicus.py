@@ -740,7 +740,8 @@ def _append_rows_safe(df_chunk, output_path, retries=6, delay=5):
 
 def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
                                   num_chunks=4, all_pixels=False,
-                                  growing_season_offset=0):
+                                  growing_season_offset=0,
+                                  date_range=None):
     """Load field CSV, download S2 products per (spatial cell, date), sample bands, save.
 
     Augmentation strategies applied:
@@ -762,6 +763,11 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
         max_products: Stop after this many spatial-cell groups (for quick tests).
         num_chunks:  Parallel connections per ZIP download.
         all_pixels:  Emit all 9 neighbourhood pixels as rows (default: False).
+        date_range:  Optional (start_str, end_str) tuple in "YYYY-MM-DD" format.
+                     When set, ALL GPS points are searched within this fixed window
+                     regardless of their collection date or growing_season_offset.
+                     Useful for targeting a specific peak-vegetation window, e.g.
+                     ("2025-10-01", "2025-11-30") for Benguet highland vegetables.
     """
     df = pd.read_csv(csv_path)
     df["capture_datetime"] = pd.to_datetime(df["capture_datetime"], format="mixed", utc=True)
@@ -908,20 +914,38 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
         min_lon, min_lat, max_lon, max_lat = key_to_bbox[(lc, lonc, d)]
         wkt = bbox_wkt(min_lon, min_lat, max_lon, max_lat)
 
-        # ── Original-season group (or shifted growing-season window) ─────────
-        # When growing_season_offset > 0, shift the search window back so we
-        # target imagery from ~mid-growing-season rather than post-harvest.
-        target_d  = d - timedelta(days=growing_season_offset)
-        offset_tag = f"_gs{growing_season_offset}" if growing_season_offset else "_orig"
+        # ── Primary season search window ──────────────────────────────────────
+        # Three modes in priority order:
+        #   1. --date-range START END  → fixed absolute window for all points
+        #   2. --growing-season-offset N  → shift back N days from collection date
+        #   3. default  → use collection date ± DATE_TOLERANCE_DAYS
+        if date_range:
+            start_str = f"{date_range[0]}T00:00:00.000Z"
+            end_str   = f"{date_range[1]}T23:59:59.000Z"
+            offset_tag = f"_dr{date_range[0]}_{date_range[1]}"
+            # For local tile matching use midpoint of the range
+            from datetime import datetime as _dt
+            dr_start = _dt.strptime(date_range[0], "%Y-%m-%d").date()
+            dr_end   = _dt.strptime(date_range[1], "%Y-%m-%d").date()
+            target_d  = dr_start + (dr_end - dr_start) / 2
+            tolerance = (dr_end - dr_start).days // 2
+            print(f"  [{i+1}/{len(keys)}] Date-range window: {date_range[0]} -> {date_range[1]}")
+        else:
+            target_d   = d - timedelta(days=growing_season_offset)
+            offset_tag = f"_gs{growing_season_offset}" if growing_season_offset else "_orig"
+            start_str  = (target_d - timedelta(days=DATE_TOLERANCE_DAYS)).strftime("%Y-%m-%dT00:00:00.000Z")
+            end_str    = (target_d + timedelta(days=DATE_TOLERANCE_DAYS)).strftime("%Y-%m-%dT23:59:59.000Z")
+            tolerance  = DATE_TOLERANCE_DAYS
+            if growing_season_offset:
+                print(f"  [{i+1}/{len(keys)}] Growing-season target: {target_d} "
+                      f"(offset -{growing_season_offset}d from {d})")
+
         orig_group_id = f"{lc:.4f}_{lonc:.4f}_{d}{offset_tag}"
-        if growing_season_offset:
-            print(f"  [{i+1}/{len(keys)}] Growing-season target: {target_d} "
-                  f"(offset -{growing_season_offset}d from {d})")
         if orig_group_id in already_done_groups:
             print(f"  [{i+1}/{len(keys)}] Already done — skipping {d}{offset_tag}")
         else:
             # Check disk first — skip catalog API if tiles are already present
-            safe_dirs = _match_local_tiles(target_d, DATE_TOLERANCE_DAYS)
+            safe_dirs = _match_local_tiles(target_d, tolerance)
             if safe_dirs:
                 print(f"  [{i+1}/{len(keys)}] {len(safe_dirs)} local tile(s) for {target_d} — sampling...")
 
@@ -935,15 +959,13 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
                     print(f"  [{i+1}/{len(keys)}] Local tile(s) yielded 0 rows — "
                           f"fetching from Copernicus catalog...")
                 auth_headers = get_auth_headers()
-                start = (target_d - timedelta(days=DATE_TOLERANCE_DAYS)).strftime("%Y-%m-%dT00:00:00.000Z")
-                end   = (target_d + timedelta(days=DATE_TOLERANCE_DAYS)).strftime("%Y-%m-%dT23:59:59.000Z")
-                products = search_products(wkt, start, end, auth_headers)
+                products = search_products(wkt, start_str, end_str, auth_headers)
                 if not products:
-                    print(f"  [{i+1}/{len(keys)}] No products for cell ({lc:.4f},{lonc:.4f}) target {target_d}")
+                    print(f"  [{i+1}/{len(keys)}] No products for cell ({lc:.4f},{lonc:.4f}) "
+                          f"window {date_range[0] if date_range else target_d}")
                 else:
                     cc_str = ", ".join(f"{p['_cc']:.0f}%" for p in products)
-                    print(f"  [{i+1}/{len(keys)}] {len(products)} tile(s) for {target_d} "
-                          f"[CC: {cc_str}] — downloading...")
+                    print(f"  [{i+1}/{len(keys)}] {len(products)} tile(s) [CC: {cc_str}] — downloading...")
                     safe_dirs = _download_tiles(products, auth_headers)
                     rows_out = _emit_rows(group_rows, safe_dirs, orig_group_id, aug_season=False)
 
@@ -1033,6 +1055,16 @@ if __name__ == "__main__":
         metavar="DAYS",
         help="Custom day offset for growing-season shift (overrides --growing-season default of 75).",
     )
+    p.add_argument(
+        "--date-range",
+        nargs=2,
+        metavar=("START", "END"),
+        help=(
+            "Fixed absolute date window for S2 search, e.g. --date-range 2025-10-01 2025-11-30. "
+            "Overrides --growing-season-offset. All GPS points are searched within this window "
+            "regardless of their collection date. Use to target a known peak-vegetation period."
+        ),
+    )
     args = p.parse_args()
     if not os.path.isfile(args.input_csv):
         print(f"Input not found: {args.input_csv}")
@@ -1045,12 +1077,22 @@ if __name__ == "__main__":
     elif args.growing_season:
         gs_offset = 75
 
-    # Auto-adjust output path for growing-season runs
+    # Date-range overrides growing-season offset
+    date_range = tuple(args.date_range) if args.date_range else None
+    if date_range:
+        gs_offset = 0  # ignored when date_range is set
+
+    # Auto-adjust output path for growing-season / date-range runs
     output = args.output
-    if gs_offset and output == "data/processed/field_data_with_bands.csv":
+    if date_range and output == "data/processed/field_data_with_bands.csv":
+        slug = f"{date_range[0]}_{date_range[1]}".replace("-", "")
+        output = f"data/processed/field_data_with_bands_{slug}.csv"
+        print(f"Date-range mode: output -> {output}")
+    elif gs_offset and output == "data/processed/field_data_with_bands.csv":
         output = "data/processed/field_data_with_bands_growing.csv"
         print(f"Growing-season mode: output -> {output}")
 
     augment_field_data_copernicus(args.input_csv, output, args.max_products,
                                   num_chunks=args.chunks, all_pixels=args.all_pixels,
-                                  growing_season_offset=gs_offset)
+                                  growing_season_offset=gs_offset,
+                                  date_range=date_range)
