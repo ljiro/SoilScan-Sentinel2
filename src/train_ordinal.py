@@ -284,7 +284,7 @@ def load_and_prepare_data(csv_path, deduplicate=False, balance_locs=False):
 
     if balance_locs:
         print("2b. Balancing classes across locations...")
-        balance_locations(df, ["n", "p", "k"])
+        df = balance_locations(df, ["n", "p", "k"])
 
     # N / P / K: ordinal 3-class already encoded as 0=Low, 1=Medium, 2=High
     # ph: ordinal 11-class from rapid soil test kit CPR scale (module-level PH_VALUES)

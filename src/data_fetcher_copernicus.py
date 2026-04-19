@@ -127,7 +127,8 @@ def search_products(bbox_wkt, start_date, end_date, auth_headers, max_cloud=20):
         except Exception:
             pass
         if cc is None or cc <= max_cloud:
-            results.append({**p, "_cc": cc if cc is not None else 0.0})
+            # Use 100.0 for unknown cloud cover so these sort last, not first
+            results.append({**p, "_cc": cc if cc is not None else 100.0})
 
     results.sort(key=lambda x: x["_cc"])
     return results[:MAX_TILES_PER_KEY]

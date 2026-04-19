@@ -579,6 +579,11 @@ def _embed_patch(model, patch_dn, wavelengths_nm, lat, lon, dt, device="cpu"):
     import torch
 
     C = patch_dn.shape[0]
+    n_meta = len(CLAY_S2_BANDS)
+    if C > n_meta:
+        patch_dn = patch_dn[:n_meta]
+        wavelengths_nm = wavelengths_nm[:n_meta]
+        C = n_meta
 
     # Clay normalisation: (dn - band_mean) / band_std  (per-band, in DN units)
     means = np.array([info[3] for info in list(CLAY_S2_BANDS.values())[:C]], dtype=np.float32)
@@ -644,8 +649,10 @@ def extract_embeddings(df, source="both", device="cpu"):
 
     covered_s2 = sum(1 for v in pt_to_s2.values() if v)
     covered_l8 = sum(1 for v in pt_to_l8.values() if v)
-    print(f"  S2 coverage: {covered_s2}/{len(unique_pts)} points")
-    print(f"  L8 coverage: {covered_l8}/{len(unique_pts)} points")
+    if pt_to_s2:
+        print(f"  S2 coverage: {covered_s2}/{len(unique_pts)} points")
+    if pt_to_l8:
+        print(f"  L8 coverage: {covered_l8}/{len(unique_pts)} points")
 
     for i in range(n):
         key = (lats[i], lons[i])
