@@ -73,6 +73,40 @@ python src/data_fetcher_copernicus.py data/processed/field_data_with_terrain.csv
 | 75 days | Nov–Dec 2025 | Late growing / early harvest |
 | 105 days | Oct–Nov 2025 | Peak canopy biomass ✓ |
 
+Alternatively, use `--date-range` to target a hard absolute window rather than a per-sample offset:
+
+```bash
+python src/data_fetcher_copernicus.py data/processed/field_data_with_terrain.csv \
+  --date-range 2025-10-01 2025-11-30
+```
+
+Output is automatically named `field_data_with_bands_20251001_20251130.csv`. This guarantees every GPS point gets imagery from the same phenological window regardless of when the soil sample was collected.
+
+---
+
+## Patch Quality Analysis
+
+Every run of `extract_clay_embeddings.py` reads the **Scene Classification Layer (SCL)** band from the S2 L2A product and computes per-patch quality metrics, stored as `quality_*` columns in the output CSV:
+
+| Column | Description |
+|--------|-------------|
+| `quality_ndvi_mean` | Mean NDVI over the 128×128 patch |
+| `quality_ndvi_p75` | 75th-percentile NDVI (robust to soil/shadow outliers) |
+| `quality_veg_frac` | Fraction of pixels with NDVI > 0.2 |
+| `quality_cloud_frac` | Fraction flagged as cloud or cloud shadow (SCL-based) |
+| `quality_valid_frac` | Fraction classified as vegetation / bare soil / water |
+
+A quality summary is printed at the end of extraction. For Oct–Nov growing-season tiles, expect `quality_ndvi_mean` around 0.3–0.6 for active vegetable crops.
+
+Optional filters drop rows that fail thresholds before saving:
+
+```bash
+python src/extract_clay_embeddings.py \
+  --min-ndvi 0.2        # exclude patches with low vegetation signal
+  --min-veg-frac 0.3    # require at least 30% vegetated pixels
+  --max-cloud-frac 0.1  # reject if more than 10% cloud/shadow
+```
+
 ---
 
 ## Feature Sets

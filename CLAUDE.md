@@ -36,6 +36,27 @@ outputs/metrics_summary.csv
 | `src/extract_clay_embeddings.py` | Two modes: (1) `--source patch-stats` (default) = 64 per-band stats, no model needed; (2) `--source sentinel2` = Clay v1.5 1024-dim embeddings. Clay source auto-downloaded from GitHub to `src/.clay_src/`. Checkpoint cached at `HF_HOME`. |
 | `src/train_ordinal.py` | XGBoost / RF / SVM / FCNN classification. Also `--regression` mode. GroupKFold by barangay. Auto-detects `patch_*`, `clay_*`, terrain feature columns. |
 
+## Key Flags Added Since Initial Build
+
+| Script | Flag | Purpose |
+|--------|------|---------|
+| `data_fetcher_copernicus.py` | `--growing-season-offset N` | Shift S2 search N days before sample date |
+| `data_fetcher_copernicus.py` | `--date-range START END` | Fixed absolute window for all points (overrides offset) |
+| `extract_clay_embeddings.py` | `--source sentinel2` | Clay v1.5 embeddings instead of patch stats |
+| `extract_clay_embeddings.py` | `--min-ndvi FLOAT` | Drop patches below NDVI threshold |
+| `extract_clay_embeddings.py` | `--min-veg-frac FLOAT` | Drop patches with too little vegetated area |
+| `extract_clay_embeddings.py` | `--max-cloud-frac FLOAT` | Drop patches with too much cloud/shadow (SCL-based) |
+| `train_ordinal.py` | `--regression` | Treat labels as continuous, clip to ordinal range |
+| `train_ordinal.py` | `--tune` | Optuna hyperparameter search |
+
+## Patch Quality Columns
+
+`extract_clay_embeddings.py` always writes these alongside patch features:
+- `quality_ndvi_mean`, `quality_ndvi_p75` — vegetation signal strength
+- `quality_veg_frac` — fraction of pixels with NDVI > 0.2
+- `quality_cloud_frac` — SCL-based cloud/shadow fraction
+- `quality_valid_frac` — fraction of usable pixels (veg/soil/water per SCL)
+
 ## S2 Processing Notes
 
 - **N0400+ offset**: S2 L2A DN must be scaled as `reflectance = DN/10000 - 0.1` (not just `/10000`). Products from 2022+ use this baseline.
