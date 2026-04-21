@@ -84,6 +84,49 @@ Output is automatically named `field_data_with_bands_20251001_20251130.csv`. Thi
 
 ---
 
+## Vegetation Timeline Analysis
+
+Before committing to a fixed offset or date range, use `analyze_vegetation_timeline.py` to scan the past N months of S2 data and compute a data-driven monthly NDVI profile for each GPS cluster.
+
+```bash
+python src/analyze_vegetation_timeline.py data/processed/field_data_with_terrain.csv
+python src/analyze_vegetation_timeline.py data/processed/field_data_with_terrain.csv \
+  --months 8 --max-cloud 20 --plot
+```
+
+The script:
+1. Groups GPS points into ~2 km spatial cells.
+2. Searches CDSE catalog for all S2 L2A tiles in the lookback window.
+3. Samples B04 + B08 per tile using whichever source is available:
+   - **Local `.SAFE`** directories already on disk (no download needed)
+   - **S3 streaming** via CDSE S3 credentials (reads only the pixels near each GPS point — no full download)
+4. Aggregates NDVI by calendar month (mean, max, tile count).
+5. Prints a monthly table and recommends the peak month as a `--date-range` window.
+
+```
+Month      NDVI mean   NDVI max   Tiles
+----------------------------------------
+2025-08        0.182      0.241       4
+2025-09        0.271      0.318       6
+2025-10        0.481      0.562       8   ← peak
+2025-11        0.412      0.503       5
+2025-12        0.203      0.280       3
+
+★ Peak vegetation month: 2025-10
+  Suggested --date-range flag:
+    --date-range 2025-10-01 2025-10-31
+```
+
+Output saved to `outputs/vegetation_timeline.csv` (and `outputs/vegetation_timeline.png` with `--plot`).
+
+**S3 streaming** (optional but recommended for tiles not yet on disk) requires `boto3` and CDSE S3 credentials in `.env`:
+```
+CDSE_S3_ACCESS_KEY=...
+CDSE_S3_SECRET_KEY=...
+```
+
+---
+
 ## Patch Quality Analysis
 
 Every run of `extract_clay_embeddings.py` reads the **Scene Classification Layer (SCL)** band from the S2 L2A product and computes per-patch quality metrics, stored as `quality_*` columns in the output CSV:
@@ -224,6 +267,7 @@ SoilScan-Sentinel2/
 │   ├── data_fetcher_copernicus.py            # S2 tile search, download, band extraction
 │   ├── extract_clay_embeddings.py            # Patch stats + Clay v1.5 embeddings
 │   ├── train_ordinal.py                      # Classification + regression training
+│   ├── analyze_vegetation_timeline.py        # Monthly NDVI profile → peak date-range finder
 │   └── .clay_src/                            # Cached Clay model source (auto-downloaded)
 ├── .env.example
 ├── requirements.txt

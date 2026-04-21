@@ -35,6 +35,7 @@ outputs/metrics_summary.csv
 | `src/data_fetcher_copernicus.py` | S2 tile search → download → band sampling. Has resume logic, cloud-sorted tile selection, growing-season offset, local tile fallthrough to API. |
 | `src/extract_clay_embeddings.py` | Two modes: (1) `--source patch-stats` (default) = 64 per-band stats, no model needed; (2) `--source sentinel2` = Clay v1.5 1024-dim embeddings. Clay source auto-downloaded from GitHub to `src/.clay_src/`. Checkpoint cached at `HF_HOME`. |
 | `src/train_ordinal.py` | XGBoost / RF / SVM / FCNN classification. Also `--regression` mode. GroupKFold by barangay. Auto-detects `patch_*`, `clay_*`, terrain feature columns. |
+| `src/analyze_vegetation_timeline.py` | Scans past N months of S2 catalog, samples B04+B08 per tile (local SAFE or S3 stream), computes monthly NDVI profile per GPS cluster, recommends peak `--date-range` window. |
 
 ## Key Flags Added Since Initial Build
 
@@ -48,6 +49,9 @@ outputs/metrics_summary.csv
 | `extract_clay_embeddings.py` | `--max-cloud-frac FLOAT` | Drop patches with too much cloud/shadow (SCL-based) |
 | `train_ordinal.py` | `--regression` | Treat labels as continuous, clip to ordinal range |
 | `train_ordinal.py` | `--tune` | Optuna hyperparameter search |
+| `analyze_vegetation_timeline.py` | `--months N` | How many months back to scan (default 6) |
+| `analyze_vegetation_timeline.py` | `--max-cloud N` | Max cloud cover % for tile inclusion (default 30) |
+| `analyze_vegetation_timeline.py` | `--plot` | Save matplotlib timeline PNG to outputs/ |
 
 ## Patch Quality Columns
 
