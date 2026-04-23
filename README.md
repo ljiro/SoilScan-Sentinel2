@@ -197,14 +197,49 @@ Cross-validation uses **GroupKFold** (grouped by barangay) to prevent spatial da
 
 ---
 
-## Current Results (Growing-Season S2, Paoay, deduplicated)
+## Current Results
 
+### October 2025 (peak growing season — `--growing-season-offset 105`)
 | Target | Best Model | OA | Kappa | Notes |
 |--------|-----------|-----|-------|-------|
 | **P** | Random Forest | — | **0.116** | Best signal; plant-stress pathway confirmed |
 | **K** | Random Forest | 0.467 | 0.011 | Near-chance; geographic confound |
 | **pH** | FCNN | 0.270 | -0.075 | Worse with vegetation; needs bare-soil imagery |
 | **N** | All | — | ~0.0 | Collapses to Low; no High-N samples in Paoay |
+
+### December 2025 (late season — `--date-range 2025-12-01 2025-12-31`)
+| Target | Best Model | OA | Kappa | Notes |
+|--------|-----------|-----|-------|-------|
+| **P** | XGBoost | 0.416 | 0.062 | Weaker than Oct; vegetation thinning reduces stress signal |
+| **K** | SVM | 0.589 | **0.289** | Major improvement over Oct — late-season canopy/senescence signal |
+| **pH** | SVM | 0.307 | 0.079 | Slight improvement; bare soil more visible |
+| **N** | All | — | ~0.0 | Collapses to Low; no High-N samples |
+
+**Key finding:** different nutrients have different optimal imagery windows. P peaks in October (active biomass), K peaks in December (late-season senescence). A multi-temporal approach combining both windows is the logical next step.
+
+### Multi-temporal pipeline
+
+Merge Oct and Dec feature sets into one dataset, so the model can leverage both windows simultaneously:
+
+```bash
+# 1. Extract patch stats for each window (already done if you ran extract_clay_embeddings.py on both)
+python src/extract_clay_embeddings.py --input data/processed/field_data_with_bands_growing.csv \
+    --output data/processed/field_data_with_clay.csv
+
+python src/extract_clay_embeddings.py --input data/processed/field_data_with_bands_20251201_20251231.csv \
+    --output data/processed/field_data_dec2025_clay.csv
+
+# 2. Merge into one multi-temporal CSV (adds _oct / _dec suffixes to all feature columns)
+python src/merge_temporal.py \
+    data/processed/field_data_with_clay.csv \
+    data/processed/field_data_dec2025_clay.csv \
+    --suffix1 oct --suffix2 dec \
+    --output data/processed/field_data_multitemporal.csv
+
+# 3. Train
+python src/train_ordinal.py data/processed/field_data_multitemporal.csv \
+    --deduplicate --filter-barangay Paoay
+```
 
 ---
 
@@ -277,6 +312,7 @@ SoilScan-Sentinel2/
 │   ├── extract_clay_embeddings.py            # Patch stats + Clay v1.5 embeddings
 │   ├── train_ordinal.py                      # Classification + regression training
 │   ├── analyze_vegetation_timeline.py        # Monthly NDVI profile → peak date-range finder
+│   ├── merge_temporal.py                     # Merge two temporal feature CSVs (adds _oct/_dec suffixes)
 │   └── .clay_src/                            # Cached Clay model source (auto-downloaded)
 ├── .env.example
 ├── requirements.txt

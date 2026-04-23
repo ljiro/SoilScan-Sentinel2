@@ -36,6 +36,7 @@ outputs/metrics_summary.csv
 | `src/extract_clay_embeddings.py` | Two modes: (1) `--source patch-stats` (default) = 64 per-band stats, no model needed; (2) `--source sentinel2` = Clay v1.5 1024-dim embeddings. Clay source auto-downloaded from GitHub to `src/.clay_src/`. Checkpoint cached at `HF_HOME`. |
 | `src/train_ordinal.py` | XGBoost / RF / SVM / FCNN classification. Also `--regression` mode. GroupKFold by barangay. Auto-detects `patch_*`, `clay_*`, `resnet_*`, terrain feature columns. |
 | `src/analyze_vegetation_timeline.py` | Scans past N months of S2 catalog, samples B04+B08 per tile (local SAFE or S3 stream), computes monthly NDVI profile per GPS cluster, recommends peak `--date-range` window. |
+| `src/merge_temporal.py` | Merges two temporal feature CSVs (band-level or patch-stats) into one multi-temporal dataset. Renames feature columns with user-specified suffixes (e.g. `_oct`, `_dec`). Terrain/labels kept from primary file. |
 
 ## Key Flags Added Since Initial Build
 
@@ -49,6 +50,9 @@ outputs/metrics_summary.csv
 | `extract_clay_embeddings.py` | `--min-ndvi FLOAT` | Drop patches below NDVI threshold |
 | `extract_clay_embeddings.py` | `--min-veg-frac FLOAT` | Drop patches with too little vegetated area |
 | `extract_clay_embeddings.py` | `--max-cloud-frac FLOAT` | Drop patches with too much cloud/shadow (SCL-based) |
+| `merge_temporal.py` | `--suffix1 NAME` | Suffix for primary CSV feature columns (default: oct) |
+| `merge_temporal.py` | `--suffix2 NAME` | Suffix for secondary CSV feature columns (default: dec) |
+| `merge_temporal.py` | `--output PATH` | Output CSV path |
 | `train_ordinal.py` | `--regression` | Treat labels as continuous, clip to ordinal range |
 | `train_ordinal.py` | `--tune` | Optuna hyperparameter search |
 | `analyze_vegetation_timeline.py` | `--months N` | How many months back to scan (default 6) |
@@ -80,14 +84,16 @@ The Clay HuggingFace repo (`made-with-clay/Clay`) only contains the checkpoint. 
 
 **Do NOT use `ClayMAEModule.load_from_checkpoint`** — causes a Lightning CLI `ArgumentParser` crash.
 
-## Current Best Results (growing-season, Paoay, deduplicated)
+## Current Best Results (Paoay, deduplicated)
 
-| Target | Best Kappa | Model |
-|--------|-----------|-------|
-| P | 0.116 | Random Forest |
-| K | 0.011 | Random Forest |
-| pH | -0.075 | FCNN (worse with veg cover) |
-| N | ~0.0 | All (no High-N samples) |
+| Target | Oct 2025 Kappa | Dec 2025 Kappa | Best window |
+|--------|---------------|---------------|-------------|
+| P | **0.116** (RF) | 0.062 (XGB) | October — peak biomass stress signal |
+| K | 0.011 (RF) | **0.289** (SVM) | December — late-season senescence |
+| pH | -0.075 (FCNN) | 0.079 (SVM) | December — bare soil more visible |
+| N | ~0.0 | ~0.0 | No High-N samples anywhere |
+
+Different nutrients require different temporal windows. Multi-temporal approach (combining Oct+Dec features) is the active next step.
 
 ## Commit Style
 

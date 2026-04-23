@@ -313,25 +313,33 @@ def load_and_prepare_data(csv_path, deduplicate=False, balance_locs=False):
         "elevation_m", "slope_deg", "aspect_deg",
         "twi", "curvature", "northness", "eastness",
     ] if c in df.columns]
-    emit_features = [c for c in df.columns if c.startswith("emit_")]
+    emit_features   = [c for c in df.columns if c.startswith("emit_")]
     clay_features   = [c for c in df.columns if c.startswith("clay_")]
     resnet_features = [c for c in df.columns if c.startswith("resnet_")]
+    patch_features  = [c for c in df.columns if c.startswith("patch_")]
     if clay_features:
         print(f"   Clay embeddings detected: {len(clay_features)} dimensions")
     if resnet_features:
         print(f"   ResNet embeddings detected: {len(resnet_features)} dimensions")
+    if patch_features:
+        print(f"   Patch statistics detected: {len(patch_features)} features")
     categorical_features  = ["crops"]
 
-    # Compute and attach spectral indices
-    idx_df = _add_spectral_indices(df)
-    index_features = idx_df.columns.tolist()
-    df = pd.concat([df, idx_df], axis=1)
+    # Compute and attach spectral indices (only when raw S2 bands are present)
+    if all(b in df.columns for b in ["B04", "B08"]):
+        idx_df = _add_spectral_indices(df)
+        index_features = idx_df.columns.tolist()
+        df = pd.concat([df, idx_df], axis=1)
+    else:
+        index_features = []
 
     # Set attrs AFTER concat — pd.concat drops attrs from the input frames
     df.attrs["ph_targets"] = ph_targets
     df.attrs["ph_values"]  = PH_VALUES
 
-    all_numeric = spectral_features + spectral_std_features + microclimate_features + terrain_features + emit_features + clay_features + resnet_features + index_features
+    all_numeric = (spectral_features + spectral_std_features + microclimate_features
+                   + terrain_features + emit_features + clay_features + resnet_features
+                   + patch_features + index_features)
     X = df[all_numeric + categorical_features]
 
     # Group by location to prevent spatial leakage.
