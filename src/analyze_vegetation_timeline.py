@@ -21,7 +21,7 @@ Usage:
 """
 
 import argparse
-import glob
+import calendar
 import os
 import re
 import sys
@@ -32,38 +32,35 @@ import numpy as np
 import pandas as pd
 import requests
 from dotenv import load_dotenv
-from rasterio.warp import transform as rio_transform
 import rasterio
+
+from data_fetcher_copernicus import (
+    CATALOG_URL,
+    CDSE_S3_BUCKET,
+    CDSE_S3_ENDPOINT,
+    FIELD_DOWNLOAD_DIR,
+    SPATIAL_GRID_DEG,
+    find_band_files,
+    get_auth_headers,
+    sample_bands_at_point,
+)
 
 load_dotenv()
 
-# ── reuse fetcher constants ───────────────────────────────────────────────────
-AUTH_URL      = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
-CATALOG_URL   = "https://catalogue.dataspace.copernicus.eu/odata/v1/Products"
-CDSE_S3_ENDPOINT = "https://eodata.dataspace.copernicus.eu"
-CDSE_S3_BUCKET   = "eodata"
-FIELD_DOWNLOAD_DIR = "data/raw/field_products"
-SPATIAL_GRID_DEG   = 0.02   # ~2 km cell size for grouping
-
-
-# ── auth ──────────────────────────────────────────────────────────────────────
-def _get_token():
-    user = os.getenv("COPERNICUS_USER")
-    pw   = os.getenv("COPERNICUS_PASS")
-    if not user or not pw:
-        raise ValueError("Set COPERNICUS_USER and COPERNICUS_PASS in .env")
-    r = requests.post(AUTH_URL, data={
-        "client_id": "cdse-public", "username": user,
-        "password": pw, "grant_type": "password",
-    }, timeout=30)
-    r.raise_for_status()
-    return {"Authorization": f"Bearer {r.json()['access_token']}"}
-
+# BAND_NAMES index positions for B04 (red) and B08 (NIR) within sample_bands_at_point output
+# sample_bands_at_point uses BAND_NAMES = ["B01","B02","B03","B04","B05","B06","B07","B08","B8A","B09","B11","B12"]
+_B04_IDX = 3
+_B08_IDX = 7
 
 # ── catalog search ────────────────────────────────────────────────────────────
-def search_tiles(lon, lat, start_date: str, end_date: str, auth_headers, max_cloud=30):
-    """Return all S2 L2A products (unsorted, no limit) for a bbox + date range."""
-    half = 0.05   # ~5 km half-width around point
+def _search_all_tiles(lon: float, lat: float, start_date: str, end_date: str,
+                      auth_headers: dict, max_cloud: int = 30) -> list[dict]:
+    """Return ALL S2 L2A products for a bbox + date range (no tile-count cap).
+
+    Unlike search_products() in data_fetcher_copernicus which caps at MAX_TILES_PER_KEY,
+    this returns everything in the window for timeline analysis.
+    """
+    half = 0.05
     bbox_wkt = (
         f"POLYGON(({lon-half} {lat-half},{lon+half} {lat-half},"
         f"{lon+half} {lat+half},{lon-half} {lat+half},{lon-half} {lat-half}))"
@@ -87,11 +84,9 @@ def search_tiles(lon, lat, start_date: str, end_date: str, auth_headers, max_clo
     for p in r.json().get("value", []):
         pid  = p["Id"]
         name = p.get("Name", "")
-        # Parse date from product name: S2B_MSIL2A_20251023T...
         m = re.search(r"_(\d{8})T", name)
         tile_date = m.group(1) if m else None
 
-        # Get cloud cover
         cc = None
         try:
             dr = requests.get(f"{CATALOG_URL}('{pid}')", headers=auth_headers, timeout=15)
@@ -118,51 +113,31 @@ def search_tiles(lon, lat, start_date: str, end_date: str, auth_headers, max_clo
 # ── local SAFE lookup ─────────────────────────────────────────────────────────
 def _find_local_safe(product_name: str) -> str | None:
     """Return path to existing local .SAFE directory, or None."""
-    candidate = os.path.join(FIELD_DOWNLOAD_DIR, product_name)
-    if os.path.isdir(candidate) and glob.glob(os.path.join(candidate, "GRANULE", "*")):
-        return candidate
-    # Also check .SAFE suffix variant
-    candidate2 = candidate if candidate.endswith(".SAFE") else candidate + ".SAFE"
-    if os.path.isdir(candidate2) and glob.glob(os.path.join(candidate2, "GRANULE", "*")):
-        return candidate2
+    for candidate in (
+        os.path.join(FIELD_DOWNLOAD_DIR, product_name),
+        os.path.join(FIELD_DOWNLOAD_DIR, product_name + ".SAFE"),
+    ):
+        if os.path.isdir(os.path.join(candidate, "GRANULE")):
+            return candidate
     return None
 
 
-def _find_band_in_safe(safe_dir: str, band: str) -> str | None:
-    """Find a specific band file inside a .SAFE directory."""
-    patterns = [
-        os.path.join(safe_dir, "GRANULE", "*", "IMG_DATA", "R10m", f"*_{band}_10m.jp2"),
-        os.path.join(safe_dir, "GRANULE", "*", "IMG_DATA", "R20m", f"*_{band}_20m.jp2"),
-        os.path.join(safe_dir, "GRANULE", "*", "IMG_DATA", f"*_{band}.jp2"),
-    ]
-    for pat in patterns:
-        hits = glob.glob(pat)
-        if hits:
-            return hits[0]
-    return None
-
-
-def _sample_band_local(safe_dir: str, band: str, lon: float, lat: float) -> float | None:
-    """Read a single-pixel band value from a local .SAFE directory."""
-    path = _find_band_in_safe(safe_dir, band)
-    if not path:
+def _sample_ndvi_local(safe_dir: str, lon: float, lat: float) -> float | None:
+    """Sample NDVI from a local .SAFE directory using the shared band sampler."""
+    vals = sample_bands_at_point(safe_dir, lon, lat)
+    if vals is None:
         return None
-    try:
-        with rasterio.open(path) as src:
-            xs, ys = rio_transform("EPSG:4326", src.crs, [lon], [lat])
-            row, col = src.index(xs[0], ys[0])
-            from rasterio.windows import Window
-            win = Window(max(0, col - 1), max(0, row - 1), 3, 3)
-            patch = src.read(1, window=win).astype(float)
-            val = float(np.nanmean(patch))
-            return val if np.isfinite(val) else None
-    except Exception:
+    b04, b08 = float(vals[_B04_IDX]), float(vals[_B08_IDX])
+    denom = b08 + b04
+    if denom == 0:
         return None
+    ndvi = (b08 - b04) / denom
+    return float(ndvi) if np.isfinite(ndvi) else None
 
 
 # ── S3 streaming ──────────────────────────────────────────────────────────────
 def _make_s3_client():
-    """Return boto3 S3 client for CDSE, or None if credentials missing."""
+    """Return boto3 S3 client for CDSE, or None if credentials or boto3 missing."""
     try:
         import boto3
         from botocore.config import Config as BotoConfig
@@ -172,8 +147,6 @@ def _make_s3_client():
     sk = os.getenv("CDSE_S3_SECRET_KEY")
     if not ak or not sk:
         return None
-    import boto3
-    from botocore.config import Config as BotoConfig
     return boto3.client(
         "s3",
         endpoint_url=CDSE_S3_ENDPOINT,
@@ -184,66 +157,74 @@ def _make_s3_client():
     )
 
 
-def _s3_find_band_key(s3, product_name: str, band: str) -> str | None:
-    """List the S3 prefix for a product and find the key for a given band."""
+def _s3_find_band_keys(s3, product_name: str, bands: list[str]) -> dict[str, str]:
+    """List the S3 prefix once and return a {band: key} dict for the requested bands."""
     date_str = product_name.split("_")[2][:8]
     y, mo, d = date_str[:4], date_str[4:6], date_str[6:8]
     prefix = f"Sentinel-2/MSI/L2A/{y}/{mo}/{d}/{product_name}/"
-    band_pat = re.compile(rf"_{band}_\d+m\.jp2$")
+    band_pats = {b: re.compile(rf"_{b}_\d+m\.jp2$") for b in bands}
+    found: dict[str, str] = {}
     try:
         paginator = s3.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=CDSE_S3_BUCKET, Prefix=prefix):
             for obj in page.get("Contents", []):
-                if band_pat.search(obj["Key"]):
-                    return obj["Key"]
+                key = obj["Key"]
+                for band, pat in list(band_pats.items()):
+                    if pat.search(key):
+                        found[band] = key
+                        del band_pats[band]
+                if not band_pats:
+                    return found
     except Exception:
         pass
-    return None
+    return found
 
 
-def _sample_band_s3(s3, product_name: str, band: str, lon: float, lat: float) -> float | None:
-    """Stream just the pixels around (lon, lat) for one band via S3 + rasterio VSI."""
-    key = _s3_find_band_key(s3, product_name, band)
-    if not key:
-        return None
-
-    ak = os.getenv("CDSE_S3_ACCESS_KEY")
-    sk = os.getenv("CDSE_S3_SECRET_KEY")
-    vsi_path = f"/vsis3/{CDSE_S3_BUCKET}/{key}"
-
-    gdal_env = {
-        "AWS_S3_ENDPOINT":        CDSE_S3_ENDPOINT.replace("https://", ""),
-        "AWS_HTTPS":              "YES",
-        "AWS_VIRTUAL_HOSTING":    "FALSE",
-        "AWS_ACCESS_KEY_ID":      ak,
-        "AWS_SECRET_ACCESS_KEY":  sk,
-        "AWS_REGION":             "default",
+def _build_gdal_env() -> dict:
+    """Build GDAL VSI env once; reuse across S3 calls."""
+    return {
+        "AWS_S3_ENDPOINT":              CDSE_S3_ENDPOINT.replace("https://", ""),
+        "AWS_HTTPS":                    "YES",
+        "AWS_VIRTUAL_HOSTING":          "FALSE",
+        "AWS_ACCESS_KEY_ID":            os.getenv("CDSE_S3_ACCESS_KEY", ""),
+        "AWS_SECRET_ACCESS_KEY":        os.getenv("CDSE_S3_SECRET_KEY", ""),
+        "AWS_REGION":                   "default",
         "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
         "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".jp2",
     }
-    try:
-        with rasterio.Env(**gdal_env):
-            with rasterio.open(vsi_path) as src:
-                xs, ys = rio_transform("EPSG:4326", src.crs, [lon], [lat])
-                row, col = src.index(xs[0], ys[0])
-                from rasterio.windows import Window
-                win = Window(max(0, col - 1), max(0, row - 1), 3, 3)
-                patch = src.read(1, window=win).astype(float)
-                val = float(np.nanmean(patch))
-                return val if np.isfinite(val) else None
-    except Exception:
+
+
+def _sample_ndvi_s3(s3, product_name: str, lon: float, lat: float,
+                    gdal_env: dict) -> float | None:
+    """Compute NDVI by streaming B04+B08 from CDSE S3 (single prefix list call)."""
+    keys = _s3_find_band_keys(s3, product_name, ["B04", "B08"])
+    if "B04" not in keys or "B08" not in keys:
         return None
 
+    vals = {}
+    for band, key in keys.items():
+        vsi = f"/vsis3/{CDSE_S3_BUCKET}/{key}"
+        try:
+            with rasterio.Env(**gdal_env):
+                with rasterio.open(vsi) as src:
+                    from rasterio.warp import transform as rio_transform
+                    from rasterio.windows import Window
+                    xs, ys = rio_transform("EPSG:4326", src.crs, [lon], [lat])
+                    row, col = src.index(xs[0], ys[0])
+                    win = Window(max(0, col - 1), max(0, row - 1), 3, 3)
+                    patch = src.read(1, window=win).astype(float)
+                    v = float(np.nanmean(patch))
+                    if np.isfinite(v):
+                        vals[band] = v
+        except Exception:
+            pass
 
-# ── NDVI computation ──────────────────────────────────────────────────────────
-def compute_ndvi(b04: float | None, b08: float | None) -> float | None:
+    b04 = vals.get("B04")
+    b08 = vals.get("B08")
     if b04 is None or b08 is None:
         return None
     denom = b08 + b04
-    if denom == 0:
-        return None
-    ndvi = (b08 - b04) / denom
-    return float(ndvi) if np.isfinite(ndvi) else None
+    return float((b08 - b04) / denom) if denom != 0 else None
 
 
 # ── main analysis ─────────────────────────────────────────────────────────────
@@ -252,7 +233,6 @@ def analyze(input_csv: str, months: int, max_cloud: int, plot: bool):
     if "latitude" not in df.columns or "longitude" not in df.columns:
         sys.exit("Input CSV must have 'latitude' and 'longitude' columns.")
 
-    # Determine lookback end date (most recent acquisition or today)
     if "capture_datetime" in df.columns:
         end_dt = pd.to_datetime(df["capture_datetime"], format="mixed", utc=True).max()
         end_date = end_dt.date()
@@ -262,14 +242,14 @@ def analyze(input_csv: str, months: int, max_cloud: int, plot: bool):
     start_date = end_date - timedelta(days=months * 31)
     print(f"Search window: {start_date} → {end_date}  ({months} months)")
 
-    # Spatial clustering
     df["_lat_cell"] = (df["latitude"]  / SPATIAL_GRID_DEG).round() * SPATIAL_GRID_DEG
     df["_lon_cell"] = (df["longitude"] / SPATIAL_GRID_DEG).round() * SPATIAL_GRID_DEG
     clusters = df[["_lat_cell", "_lon_cell"]].drop_duplicates().values.tolist()
     print(f"Spatial clusters: {len(clusters)}")
 
-    auth = _get_token()
-    s3   = _make_s3_client()
+    auth     = get_auth_headers()
+    s3       = _make_s3_client()
+    gdal_env = _build_gdal_env()
     if s3:
         print("S3 streaming enabled (will stream tiles not on disk).")
     else:
@@ -282,7 +262,8 @@ def analyze(input_csv: str, months: int, max_cloud: int, plot: bool):
         cluster_key = f"{lat_c:.4f},{lon_c:.4f}"
         print(f"\nCluster ({lat_c:.4f}, {lon_c:.4f})")
 
-        tiles = search_tiles(lon_c, lat_c, str(start_date), str(end_date), auth, max_cloud)
+        tiles = _search_all_tiles(lon_c, lat_c, str(start_date), str(end_date),
+                                  auth, max_cloud)
         if not tiles:
             print("  No tiles found.")
             continue
@@ -295,22 +276,17 @@ def analyze(input_csv: str, months: int, max_cloud: int, plot: bool):
                 continue
             month_key = f"{tile_date[:4]}-{tile_date[4:6]}"
 
-            b04 = b08 = None
-
-            # Try local SAFE first
             safe = _find_local_safe(name)
             if safe:
-                b04 = _sample_band_local(safe, "B04", lon_c, lat_c)
-                b08 = _sample_band_local(safe, "B08", lon_c, lat_c)
+                ndvi   = _sample_ndvi_local(safe, lon_c, lat_c)
                 source = "local"
             elif s3:
-                b04 = _sample_band_s3(s3, name, "B04", lon_c, lat_c)
-                b08 = _sample_band_s3(s3, name, "B08", lon_c, lat_c)
+                ndvi   = _sample_ndvi_s3(s3, name, lon_c, lat_c, gdal_env)
                 source = "s3"
             else:
+                ndvi   = None
                 source = "skipped"
 
-            ndvi = compute_ndvi(b04, b08)
             status = f"NDVI={ndvi:.3f}" if ndvi is not None else "no data"
             print(f"  {tile_date} cc={tile['cc']:.0f}% [{source}] {status}")
 
@@ -358,7 +334,6 @@ def analyze(input_csv: str, months: int, max_cloud: int, plot: bool):
     print("-" * 40)
     peak_row = None
     for _, row in summary.iterrows():
-        marker = ""
         if peak_row is None or row["ndvi_mean"] > peak_row["ndvi_mean"]:
             peak_row = row
         print(f"{row['month']:<10} {row['ndvi_mean']:>10.3f} {row['ndvi_max']:>10.3f} {int(row['tiles']):>7}")
@@ -366,8 +341,6 @@ def analyze(input_csv: str, months: int, max_cloud: int, plot: bool):
     if peak_row is not None:
         peak_month = peak_row["month"]
         yr, mo = int(peak_month[:4]), int(peak_month[5:])
-        # Suggest full-month window
-        import calendar
         last_day = calendar.monthrange(yr, mo)[1]
         print(f"\n★ Peak vegetation month: {peak_month}  (mean NDVI={peak_row['ndvi_mean']:.3f})")
         print(f"  Suggested --date-range flag:")
@@ -379,8 +352,8 @@ def analyze(input_csv: str, months: int, max_cloud: int, plot: bool):
             import matplotlib.pyplot as plt
             fig, ax = plt.subplots(figsize=(10, 5))
             for cluster_key, months_data in month_ndvi.items():
-                mons   = sorted(months_data.keys())
-                means  = [float(np.mean(months_data[m])) for m in mons]
+                mons  = sorted(months_data.keys())
+                means = [float(np.mean(months_data[m])) for m in mons]
                 ax.plot(mons, means, marker="o", label=cluster_key, alpha=0.7)
             ax.set_xlabel("Month")
             ax.set_ylabel("Mean NDVI")

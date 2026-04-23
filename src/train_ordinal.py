@@ -314,9 +314,12 @@ def load_and_prepare_data(csv_path, deduplicate=False, balance_locs=False):
         "twi", "curvature", "northness", "eastness",
     ] if c in df.columns]
     emit_features = [c for c in df.columns if c.startswith("emit_")]
-    clay_features = [c for c in df.columns if c.startswith("clay_")]
+    clay_features   = [c for c in df.columns if c.startswith("clay_")]
+    resnet_features = [c for c in df.columns if c.startswith("resnet_")]
     if clay_features:
         print(f"   Clay embeddings detected: {len(clay_features)} dimensions")
+    if resnet_features:
+        print(f"   ResNet embeddings detected: {len(resnet_features)} dimensions")
     categorical_features  = ["crops"]
 
     # Compute and attach spectral indices
@@ -328,7 +331,7 @@ def load_and_prepare_data(csv_path, deduplicate=False, balance_locs=False):
     df.attrs["ph_targets"] = ph_targets
     df.attrs["ph_values"]  = PH_VALUES
 
-    all_numeric = spectral_features + spectral_std_features + microclimate_features + terrain_features + emit_features + clay_features + index_features
+    all_numeric = spectral_features + spectral_std_features + microclimate_features + terrain_features + emit_features + clay_features + resnet_features + index_features
     X = df[all_numeric + categorical_features]
 
     # Group by location to prevent spatial leakage.

@@ -34,7 +34,7 @@ outputs/metrics_summary.csv
 |------|---------|
 | `src/data_fetcher_copernicus.py` | S2 tile search → download → band sampling. Has resume logic, cloud-sorted tile selection, growing-season offset, local tile fallthrough to API. |
 | `src/extract_clay_embeddings.py` | Two modes: (1) `--source patch-stats` (default) = 64 per-band stats, no model needed; (2) `--source sentinel2` = Clay v1.5 1024-dim embeddings. Clay source auto-downloaded from GitHub to `src/.clay_src/`. Checkpoint cached at `HF_HOME`. |
-| `src/train_ordinal.py` | XGBoost / RF / SVM / FCNN classification. Also `--regression` mode. GroupKFold by barangay. Auto-detects `patch_*`, `clay_*`, terrain feature columns. |
+| `src/train_ordinal.py` | XGBoost / RF / SVM / FCNN classification. Also `--regression` mode. GroupKFold by barangay. Auto-detects `patch_*`, `clay_*`, `resnet_*`, terrain feature columns. |
 | `src/analyze_vegetation_timeline.py` | Scans past N months of S2 catalog, samples B04+B08 per tile (local SAFE or S3 stream), computes monthly NDVI profile per GPS cluster, recommends peak `--date-range` window. |
 
 ## Key Flags Added Since Initial Build
@@ -44,6 +44,8 @@ outputs/metrics_summary.csv
 | `data_fetcher_copernicus.py` | `--growing-season-offset N` | Shift S2 search N days before sample date |
 | `data_fetcher_copernicus.py` | `--date-range START END` | Fixed absolute window for all points (overrides offset) |
 | `extract_clay_embeddings.py` | `--source sentinel2` | Clay v1.5 embeddings instead of patch stats |
+| `extract_clay_embeddings.py` | `--source resnet` | Pretrained ResNet-50 embeddings (10-ch S2 input) |
+| `extract_clay_embeddings.py` | `--resnet-size resnet18\|resnet50` | ResNet variant (default: resnet50 = 2048-dim) |
 | `extract_clay_embeddings.py` | `--min-ndvi FLOAT` | Drop patches below NDVI threshold |
 | `extract_clay_embeddings.py` | `--min-veg-frac FLOAT` | Drop patches with too little vegetated area |
 | `extract_clay_embeddings.py` | `--max-cloud-frac FLOAT` | Drop patches with too much cloud/shadow (SCL-based) |

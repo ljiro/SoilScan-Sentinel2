@@ -84,6 +84,10 @@ L8_BANDS = {
 # Clay v1.5 (large) produces 1024-dim CLS-token embeddings
 EMBED_DIM = 1024
 
+# ResNet output dims: 512 for ResNet-18, 2048 for ResNet-50
+RESNET_EMBED_DIM_18 = 512
+RESNET_EMBED_DIM_50 = 2048
+
 # Clay metadata for Sentinel-2 L2A — matches configs/metadata.yaml in the repo
 # Band order must follow Clay's expected sequence for the sentinel-2-l2a platform
 CLAY_S2_BANDS = {
@@ -236,6 +240,119 @@ def _load_clay_model(device="cpu"):
             f"Could not load Clay encoder: {e}\n"
             "Try: pip install torch torchvision einops timm"
         ) from e
+
+
+# ---------------------------------------------------------------------------
+# ResNet feature extractor (pretrained ImageNet, multi-spectral first conv)
+# ---------------------------------------------------------------------------
+
+def _load_resnet_model(n_channels: int = 10, model_size: str = "resnet50",
+                       device: str = "cpu"):
+    """Load pretrained ResNet as a multi-spectral feature extractor.
+
+    The first conv layer is replaced to accept `n_channels` input bands.
+    New channel weights are initialised by averaging the 3 pretrained RGB
+    weights — standard practice for multi-spectral transfer learning.
+
+    Returns (model, embed_dim).
+    """
+    try:
+        import torch
+        import torch.nn as nn
+        import torchvision.models as tvm
+    except ImportError:
+        raise RuntimeError(
+            "pip install torch torchvision  (required for --source resnet)"
+        )
+
+    if model_size == "resnet18":
+        model     = tvm.resnet18(weights="DEFAULT")
+        embed_dim = RESNET_EMBED_DIM_18
+    else:
+        model     = tvm.resnet50(weights="DEFAULT")
+        embed_dim = RESNET_EMBED_DIM_50
+
+    if n_channels != 3:
+        old      = model.conv1
+        new_conv = nn.Conv2d(
+            n_channels, old.out_channels,
+            kernel_size=old.kernel_size, stride=old.stride,
+            padding=old.padding, bias=False,
+        )
+        with torch.no_grad():
+            avg = old.weight.mean(dim=1, keepdim=True)            # (64, 1, 7, 7)
+            new_conv.weight.copy_(avg.expand(-1, n_channels, -1, -1))
+        model.conv1 = new_conv
+
+    model.fc = nn.Identity()   # strip classifier, keep pool features
+    model.eval().to(device)
+    print(f"  ResNet-{model_size[-2:]} loaded: {n_channels}-ch input, {embed_dim}-dim output")
+    return model, embed_dim
+
+
+def _embed_patch_resnet(model, patch_dn: np.ndarray, device: str = "cpu") -> np.ndarray:
+    """Run a (C, H, W) S2 DN patch through ResNet, return pooled feature vector.
+
+    DN values are scaled to [0, 1] and resized to 224×224 for ResNet's
+    expected input size.
+    """
+    import torch
+    import torch.nn.functional as F
+
+    patch_norm = np.clip(patch_dn.astype(np.float32) / 10000.0, 0.0, 1.0)
+    tensor     = torch.from_numpy(patch_norm[None]).float().to(device)   # (1,C,H,W)
+    tensor     = F.interpolate(tensor, size=(224, 224), mode="bilinear", align_corners=False)
+    with torch.no_grad():
+        feat = model(tensor)   # (1, embed_dim)
+    return feat.squeeze(0).cpu().numpy()
+
+
+def extract_resnet_embeddings(df: pd.DataFrame, model_size: str = "resnet50",
+                               device: str = "cpu") -> tuple[np.ndarray, int]:
+    """Extract pretrained ResNet features for every GPS point.
+
+    Uses the same S2 SAFE patch extraction as the Clay path but feeds raw DN
+    patches through a 10-channel ResNet instead of the Clay encoder.
+
+    Returns (embeddings array of shape (N, embed_dim), embed_dim).
+    """
+    n_bands         = len(S2_BAND_NAMES)
+    model, embed_dim = _load_resnet_model(n_bands, model_size, device)
+
+    lats = df["latitude"].to_numpy(dtype=float)
+    lons = df["longitude"].to_numpy(dtype=float)
+    n    = len(df)
+    embeddings = np.full((n, embed_dim), np.nan, dtype=np.float32)
+
+    unique_pts = pd.DataFrame({"lat": lats, "lon": lons}).drop_duplicates()
+    pt_to_s2   = {}
+    for _, row in unique_pts.iterrows():
+        key = (row["lat"], row["lon"])
+        pt_to_s2[key] = _find_safe_for_point(row["lat"], row["lon"], SAFE_DIR)
+
+    covered = sum(1 for v in pt_to_s2.values() if v)
+    print(f"  S2 coverage: {covered}/{len(unique_pts)} points")
+
+    for i in range(n):
+        key  = (lats[i], lons[i])
+        safe = pt_to_s2.get(key)
+        if not safe:
+            continue
+        patch_data = _extract_s2_patch(safe, lats[i], lons[i], raw=True)
+        if patch_data is None:
+            continue
+        try:
+            patch, _, _ = patch_data
+            embeddings[i] = _embed_patch_resnet(model, patch, device)
+        except Exception as exc:
+            print(f"  WARNING row {i}: ResNet embed failed — {exc}")
+
+        if (i + 1) % 50 == 0:
+            ok = int(np.sum(~np.isnan(embeddings[:i+1, 0])))
+            print(f"  Progress: {i+1}/{n}  embedded={ok}", end="\r")
+
+    print()
+    return embeddings, embed_dim
 
 
 # ---------------------------------------------------------------------------
@@ -934,15 +1051,22 @@ def main():
     )
     parser.add_argument(
         "--source",
-        choices=["sentinel2", "landsat", "both", "patch-stats"],
+        choices=["sentinel2", "landsat", "both", "patch-stats", "resnet"],
         default="patch-stats",
         help=(
             "Feature extraction mode:\n"
-            "  patch-stats  — per-band statistics + indices from image patches (no model download, default)\n"
-            "  sentinel2    — Clay embeddings from S2 (requires ~5 GB disk + torch)\n"
+            "  patch-stats  — per-band statistics + indices from image patches (no model, default)\n"
+            "  sentinel2    — Clay v1.5 embeddings from S2 (requires ~5 GB disk + torch)\n"
             "  landsat      — Clay embeddings from Landsat\n"
-            "  both         — Clay embeddings, S2 primary + Landsat fallback"
+            "  both         — Clay embeddings, S2 primary + Landsat fallback\n"
+            "  resnet       — pretrained ResNet-50 embeddings from S2 (requires torch + torchvision)"
         ),
+    )
+    parser.add_argument(
+        "--resnet-size",
+        choices=["resnet18", "resnet50"],
+        default="resnet50",
+        help="ResNet variant for --source resnet (default: resnet50 = 2048-dim).",
     )
     parser.add_argument("--download-landsat", action="store_true",
                         help="Download Landsat 8/9 scenes via Planetary Computer before extracting.")
@@ -1051,6 +1175,30 @@ def main():
         df_out.to_csv(out_csv, index=False, quoting=1)
         print(f"\n5. Saved: {out_csv}  shape={df_out.shape}")
         print(f"   Patch feature columns: {feat_cols[0]} … {feat_cols[-1]}")
+        print(f"\nNext step:")
+        print(f"  python src/train_ordinal.py {out_csv} --deduplicate --filter-barangay Paoay")
+
+    elif args.source == "resnet":
+        # ResNet pretrained feature extraction — fast, no large checkpoint download
+        model_size = getattr(args, "resnet_size", "resnet50")
+        print(f"3. Extracting ResNet ({model_size}) embeddings from S2 patches...")
+        embeddings, embed_dim = extract_resnet_embeddings(df, model_size=model_size,
+                                                           device=args.device)
+        n_ok = int(np.sum(~np.isnan(embeddings[:, 0])))
+        print(f"   Embedded: {n_ok}/{len(df)} rows ({n_ok/len(df)*100:.1f}%)")
+        if n_ok == 0:
+            print("\n  ERROR: No ResNet embeddings extracted.")
+            print("  Check that Sentinel-2 .SAFE files exist in data/raw/field_products/")
+            sys.exit(1)
+
+        print("4. Merging embeddings into dataset...")
+        embed_cols = [f"resnet_{i:04d}" for i in range(embed_dim)]
+        embed_df   = pd.DataFrame(embeddings, columns=embed_cols)
+        df_out     = pd.concat([df.reset_index(drop=True), embed_df], axis=1)
+        os.makedirs(os.path.dirname(out_csv), exist_ok=True)
+        df_out.to_csv(out_csv, index=False, quoting=1)
+        print(f"\n5. Saved: {out_csv}  shape={df_out.shape}")
+        print(f"   Embedding columns: resnet_0000 … resnet_{embed_dim-1:04d}")
         print(f"\nNext step:")
         print(f"  python src/train_ordinal.py {out_csv} --deduplicate --filter-barangay Paoay")
 
