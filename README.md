@@ -188,7 +188,6 @@ Four classifier families trained per target (N, P, K, pH):
 Also supports `--regression` mode (treats labels as continuous, clips predictions to ordinal range).
 
 **Evaluation metrics:**
-- Overall Accuracy (OA)
 - Macro F1-score
 - Cohen's Kappa (primary metric — corrects for chance)
 - Ordinal MAE
@@ -200,20 +199,20 @@ Cross-validation uses **GroupKFold** (grouped by barangay) to prevent spatial da
 ## Current Results
 
 ### October 2025 (peak growing season — `--growing-season-offset 105`)
-| Target | Best Model | OA | Kappa | Notes |
-|--------|-----------|-----|-------|-------|
-| **P** | Random Forest | — | **0.116** | Best signal; plant-stress pathway confirmed |
-| **K** | Random Forest | 0.467 | 0.011 | Near-chance; geographic confound |
-| **pH** | FCNN | 0.270 | -0.075 | Worse with vegetation; needs bare-soil imagery |
-| **N** | All | — | ~0.0 | Collapses to Low; no High-N samples in Paoay |
+| Target | Best Model | Kappa | Notes |
+|--------|-----------|-------|-------|
+| **P** | Random Forest | **0.116** | Best signal; plant-stress pathway confirmed |
+| **K** | Random Forest | 0.011 | Near-chance; geographic confound |
+| **pH** | FCNN | -0.075 | Worse with vegetation; needs bare-soil imagery |
+| **N** | All | ~0.0 | Collapses to Low; no High-N samples in Paoay |
 
 ### December 2025 (late season — `--date-range 2025-12-01 2025-12-31`)
-| Target | Best Model | OA | Kappa | Notes |
-|--------|-----------|-----|-------|-------|
-| **P** | XGBoost | 0.416 | 0.062 | Weaker than Oct; vegetation thinning reduces stress signal |
-| **K** | SVM | 0.589 | **0.289** | Major improvement over Oct — late-season canopy/senescence signal |
-| **pH** | SVM | 0.307 | 0.079 | Slight improvement; bare soil more visible |
-| **N** | All | — | ~0.0 | Collapses to Low; no High-N samples |
+| Target | Best Model | Kappa | Notes |
+|--------|-----------|-------|-------|
+| **P** | XGBoost | 0.062 | Weaker than Oct; vegetation thinning reduces stress signal |
+| **K** | SVM | **0.289** | Major improvement over Oct — late-season canopy/senescence signal |
+| **pH** | SVM | 0.079 | Slight improvement; bare soil more visible |
+| **N** | All | ~0.0 | Collapses to Low; no High-N samples |
 
 **Key finding:** different nutrients have different optimal imagery windows. P peaks in October (active biomass), K peaks in December (late-season senescence). A multi-temporal approach combining both windows is the logical next step.
 
@@ -305,7 +304,7 @@ SoilScan-Sentinel2/
 │       └── field_data_with_clay.csv           # + patch stats or Clay embeddings
 ├── outputs/
 │   ├── figures/                               # Confusion matrices, feature importance
-│   ├── metrics_summary.csv                    # OA / F1 / Kappa / MAE per model/target
+│   ├── metrics_summary.csv                    # F1 / Kappa / MAE per model/target
 │   └── feature_importances.csv               # Aggregated feature importance scores
 ├── src/
 │   ├── data_fetcher_copernicus.py            # S2 tile search, download, band extraction
