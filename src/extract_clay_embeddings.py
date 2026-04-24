@@ -408,6 +408,59 @@ def _find_safe_for_point(lat, lon, safe_root):
     return candidates[0][1]
 
 
+def _find_all_safes_for_point(lat, lon, safe_root, max_cloud=80):
+    """Return all SAFE dirs whose footprint covers (lat, lon), sorted by cloud cover asc."""
+    import glob as _glob
+    from rasterio.crs import CRS
+    from rasterio.warp import transform_bounds
+
+    wgs84 = CRS.from_epsg(4326)
+    candidates = []
+    for safe_path in _glob.glob(os.path.join(safe_root, "**/*.SAFE"), recursive=True):
+        b04s = _glob.glob(os.path.join(safe_path, "**/*B04_10m.jp2"), recursive=True)
+        if not b04s:
+            continue
+        try:
+            with rasterio.open(b04s[0]) as src:
+                if src.crs and src.crs != wgs84:
+                    left, bottom, right, top = transform_bounds(src.crs, wgs84, *src.bounds)
+                else:
+                    left, bottom, right, top = src.bounds
+                if left <= lon <= right and bottom <= lat <= top:
+                    cloud = _safe_cloud_cover(safe_path)
+                    if cloud <= max_cloud:
+                        candidates.append((cloud, safe_path))
+        except Exception:
+            continue
+    candidates.sort(key=lambda x: x[0])
+    return [p for _, p in candidates]
+
+
+def _composite_s2_patch(safe_paths, lat, lon, patch_px=PATCH_SIZE):
+    """Extract patches from multiple SAFEs and return median-composited (C, H, W) reflectance.
+
+    Compositing across tiles reduces atmospheric noise, cloud shadows, and
+    sensor artefacts. Uses pixel-wise median, which suppresses outliers better
+    than mean and avoids cloud contamination from individual tiles.
+    """
+    patches = []
+    meta = None
+    for safe in safe_paths:
+        result = _extract_s2_patch(safe, lat, lon, patch_px=patch_px, raw=False)
+        if result is not None:
+            patch, wavelengths, gsds = result
+            patches.append(patch)
+            if meta is None:
+                meta = (wavelengths, gsds)
+    if not patches:
+        return None
+    if len(patches) == 1:
+        return patches[0], meta[0], meta[1]
+    stacked = np.stack(patches, axis=0)   # (N, C, H, W)
+    composited = np.nanmedian(stacked, axis=0).astype(np.float32)
+    return composited, meta[0], meta[1]
+
+
 def _lonlat_to_rowcol(src, lon, lat):
     """Convert WGS84 (lon, lat) to (row, col) in a rasterio dataset."""
     from pyproj import Transformer
@@ -702,8 +755,13 @@ def _patch_stats(patch: np.ndarray, band_names: list) -> np.ndarray:
     return np.array(feats, dtype=np.float32)
 
 
-def extract_patch_stats(df, source="sentinel2"):
+def extract_patch_stats(df, source="sentinel2", composite=False):
     """Extract patch-level statistics for every row — no model, no large download.
+
+    Args:
+        composite: if True, median-composite patches across all available tiles
+                   covering each GPS point before computing statistics. Reduces
+                   atmospheric noise and cloud shadow artefacts.
 
     Returns a (N, n_features) float32 array.
     Rows without a matching scene are NaN.
@@ -725,21 +783,33 @@ def extract_patch_stats(df, source="sentinel2"):
 
     # Map unique GPS points to scene files
     unique_pts = pd.DataFrame({"lat": lats, "lon": lons}).drop_duplicates()
-    pt_to_s2   = {}
+    pt_to_s2   = {}   # key → single best SAFE (non-composite mode)
+    pt_to_s2s  = {}   # key → list of all SAFEs (composite mode)
     pt_to_l8   = {}
 
     print(f"  Mapping {len(unique_pts)} unique GPS points to scene files...")
+    if composite:
+        print("  Composite mode: median across all available tiles per point")
     for _, row in unique_pts.iterrows():
         key = (row["lat"], row["lon"])
         if source in ("sentinel2", "both"):
-            pt_to_s2[key] = _find_safe_for_point(row["lat"], row["lon"], SAFE_DIR)
+            if composite:
+                pt_to_s2s[key] = _find_all_safes_for_point(row["lat"], row["lon"], SAFE_DIR)
+            else:
+                pt_to_s2[key] = _find_safe_for_point(row["lat"], row["lon"], SAFE_DIR)
         if source in ("landsat", "both") and os.path.isdir(LANDSAT_DIR):
             pt_to_l8[key] = _find_landsat_for_point(row["lat"], row["lon"], LANDSAT_DIR)
 
-    covered_s2 = sum(1 for v in pt_to_s2.values() if v)
-    covered_l8 = sum(1 for v in pt_to_l8.values() if v)
-    print(f"  S2 coverage: {covered_s2}/{len(unique_pts)} points")
+    if composite:
+        covered_s2 = sum(1 for v in pt_to_s2s.values() if v)
+        tile_counts = [len(v) for v in pt_to_s2s.values() if v]
+        avg_tiles = sum(tile_counts) / len(tile_counts) if tile_counts else 0
+        print(f"  S2 coverage: {covered_s2}/{len(unique_pts)} points  (avg {avg_tiles:.1f} tiles/point)")
+    else:
+        covered_s2 = sum(1 for v in pt_to_s2.values() if v)
+        print(f"  S2 coverage: {covered_s2}/{len(unique_pts)} points")
     if source in ("landsat", "both"):
+        covered_l8 = sum(1 for v in pt_to_l8.values() if v)
         print(f"  L8 coverage: {covered_l8}/{len(unique_pts)} points")
 
     for i in range(n):
@@ -748,10 +818,16 @@ def extract_patch_stats(df, source="sentinel2"):
         band_names = S2_BAND_NAMES
 
         if source in ("sentinel2", "both"):
-            safe = pt_to_s2.get(key)
-            if safe:
-                patch_data = _extract_s2_patch(safe, lats[i], lons[i])
-                band_names = S2_BAND_NAMES
+            if composite:
+                safes = pt_to_s2s.get(key) or []
+                if safes:
+                    patch_data = _composite_s2_patch(safes, lats[i], lons[i])
+                    band_names = S2_BAND_NAMES
+            else:
+                safe = pt_to_s2.get(key)
+                if safe:
+                    patch_data = _extract_s2_patch(safe, lats[i], lons[i])
+                    band_names = S2_BAND_NAMES
 
         if patch_data is None and source in ("landsat", "both"):
             l8 = pt_to_l8.get(key)
@@ -1076,6 +1152,9 @@ def main():
                         help="Input CSV (default: field_data_with_terrain.csv or field_data_with_bands.csv).")
     parser.add_argument("--output", default=None,
                         help="Output CSV path (default: data/processed/field_data_with_clay.csv).")
+    parser.add_argument("--composite", action="store_true",
+                        help="Median-composite patches across all available tiles per point "
+                             "(reduces cloud/atmospheric noise, recommended when multiple tiles exist).")
     parser.add_argument("--min-ndvi", type=float, default=None, metavar="FLOAT",
                         help="Drop patches where mean NDVI < threshold (e.g. 0.2). "
                              "Useful to exclude bare soil / cloud-covered patches.")
@@ -1115,7 +1194,8 @@ def main():
     # 3. Extract features
     if args.source == "patch-stats":
         print("3. Extracting patch-level statistics from S2 imagery (no model required)...")
-        features, n_feats, quality_cols, quality_data = extract_patch_stats(df, source="sentinel2")
+        features, n_feats, quality_cols, quality_data = extract_patch_stats(
+            df, source="sentinel2", composite=args.composite)
 
         n_ok = int(np.sum(~np.isnan(features[:, 0])))
         print(f"   Processed: {n_ok}/{len(df)} rows ({n_ok/len(df)*100:.1f}%)  features={n_feats}")
