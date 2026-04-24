@@ -47,13 +47,13 @@ A key finding from this project: for nutrient prediction via plant-stress spectr
       Generates 1024-dim CLS-token embeddings from the Clay geospatial ViT.
       Output: data/processed/field_data_with_clay.csv
 
-   c) ResNet-50 pretrained embeddings (fast, no large checkpoint)
+   c) ResNet-50 pretrained embeddings — available but not yet evaluated
       python src/extract_clay_embeddings.py --source resnet
       python src/extract_clay_embeddings.py --source resnet --resnet-size resnet18
       Adapts pretrained ImageNet ResNet to 10 S2 input channels by averaging
       the RGB channel weights. Generates 2048-dim (ResNet-50) or 512-dim
       (ResNet-18) pooled feature vectors stored as resnet_* columns.
-      Output: data/processed/field_data_with_clay.csv
+      Not used in current results — patch-stats (4a) is the active baseline.
 
 5. Model training with spatial cross-validation
    python src/train_ordinal.py data/processed/field_data_with_clay.csv \
@@ -168,7 +168,7 @@ Features are auto-detected from column names in the input CSV:
 |--------|--------|------|
 | `patch_*` | Patch statistics (no model) | 64 |
 | `clay_*` | Clay v1.5 encoder embeddings | 1024 |
-| `resnet_*` | ResNet-50 pretrained embeddings | 2048 (or 512 for ResNet-18) |
+| `resnet_*` | ResNet-50 pretrained embeddings *(available, not yet evaluated)* | 2048 (or 512 for ResNet-18) |
 | `dem_*`, `slope`, `aspect`, `altitude` | Terrain | ~5 |
 | Raw S2 bands (`B02`–`B12`, `B8A`) | Direct pixel values | 10–12 |
 

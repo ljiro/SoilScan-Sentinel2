@@ -45,7 +45,7 @@ outputs/metrics_summary.csv
 | `data_fetcher_copernicus.py` | `--growing-season-offset N` | Shift S2 search N days before sample date |
 | `data_fetcher_copernicus.py` | `--date-range START END` | Fixed absolute window for all points (overrides offset) |
 | `extract_clay_embeddings.py` | `--source sentinel2` | Clay v1.5 embeddings instead of patch stats |
-| `extract_clay_embeddings.py` | `--source resnet` | Pretrained ResNet-50 embeddings (10-ch S2 input) |
+| `extract_clay_embeddings.py` | `--source resnet` | Pretrained ResNet-50 embeddings (10-ch S2 input) — implemented, not yet evaluated |
 | `extract_clay_embeddings.py` | `--resnet-size resnet18\|resnet50` | ResNet variant (default: resnet50 = 2048-dim) |
 | `extract_clay_embeddings.py` | `--min-ndvi FLOAT` | Drop patches below NDVI threshold |
 | `extract_clay_embeddings.py` | `--min-veg-frac FLOAT` | Drop patches with too little vegetated area |
