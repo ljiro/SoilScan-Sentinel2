@@ -187,7 +187,7 @@ def deduplicate_gps(df: pd.DataFrame) -> pd.DataFrame:
     for col in label_cols:
         modes = (
             df.groupby(key)[col]
-            .agg(lambda x: x.mode().iloc[0] if not x.mode().empty else x.iloc[0])
+            .agg(lambda x: (m := x.dropna().mode()).iloc[0] if len(m) else np.nan)
             .reset_index()
             .rename(columns={col: f"__{col}_mode"})
         )

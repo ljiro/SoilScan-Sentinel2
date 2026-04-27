@@ -75,12 +75,23 @@ def merge(csv1: str, csv2: str, suffix1: str, suffix2: str, output: str):
     keep2 = ["latitude", "longitude"] + [c for c in df2.columns if c not in _KEEP_COLS]
     df2_slim = df2[keep2]
 
+    # Round GPS coordinates to 6 decimal places (~0.1 m precision) before merging
+    # to avoid silent row-drops caused by floating-point CSV round-trip differences
+    for _df in (df1, df2_slim):
+        _df["latitude"]  = _df["latitude"].round(6)
+        _df["longitude"] = _df["longitude"].round(6)
+
+    before_merge = len(df1)
     merged = pd.merge(
         df1, df2_slim,
         on=["latitude", "longitude"],
         how="inner",
         suffixes=("", f"_dup_{suffix2}"),
     )
+    dropped = before_merge - len(merged)
+    if dropped > 0:
+        print(f"  WARNING: {dropped} rows from primary CSV had no match in secondary "
+              f"(inner join on lat/lon). Check that both files cover the same GPS points.")
 
     # Drop any accidental duplicate columns (e.g. if df2 had keep-cols that slipped through)
     dup_cols = [c for c in merged.columns if c.endswith(f"_dup_{suffix2}")]

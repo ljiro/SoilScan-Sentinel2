@@ -449,9 +449,12 @@ def _composite_s2_patch(safe_paths, lat, lon, patch_px=PATCH_SIZE):
         result = _extract_s2_patch(safe, lat, lon, patch_px=patch_px, raw=False)
         if result is not None:
             patch, wavelengths, gsds = result
-            patches.append(patch)
+            # Only stack patches with the expected number of bands
             if meta is None:
                 meta = (wavelengths, gsds)
+                patches.append(patch)
+            elif patch.shape[0] == patches[0].shape[0]:
+                patches.append(patch)
     if not patches:
         return None
     if len(patches) == 1:
@@ -581,7 +584,7 @@ def _extract_scl_patch(safe_path, lat, lon, patch_px=PATCH_SIZE):
         return None
 
 
-def _patch_quality(patch_reflectance, scl=None):
+def _patch_quality(patch_reflectance, scl=None, band_names=None):
     """Compute vegetation quality metrics for a (C, H, W) reflectance patch.
 
     Returns a dict with:
@@ -592,8 +595,8 @@ def _patch_quality(patch_reflectance, scl=None):
         valid_frac    — fraction of pixels classified as usable (veg/soil/water)
         scl_available — whether SCL data was provided
     """
-    # Find B08 (NIR) and B04 (Red) by position in S2_BAND_NAMES
-    band_names = S2_BAND_NAMES
+    if band_names is None:
+        band_names = S2_BAND_NAMES
     try:
         idx_nir = band_names.index("B08")
         idx_red = band_names.index("B04")
@@ -844,7 +847,7 @@ def extract_patch_stats(df, source="sentinel2", composite=False):
             # Vegetation / cloud quality check using SCL band
             safe = pt_to_s2.get(key) if source in ("sentinel2", "both") else None
             scl  = _extract_scl_patch(safe, lats[i], lons[i]) if safe else None
-            quality = _patch_quality(patch, scl)
+            quality = _patch_quality(patch, scl, band_names=band_names)
             for qk, qv in quality.items():
                 if qk not in quality_cols:
                     quality_cols.append(qk)
