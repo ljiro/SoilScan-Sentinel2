@@ -73,6 +73,9 @@ outputs/metrics_summary.csv
 - **Clay normalization**: Clay expects raw DN values (0–10000 range), normalizes with its own per-band mean/std from `configs/metadata.yaml`. Do NOT apply the reflectance conversion before passing to Clay.
 - **UTM vs WGS84**: Always use `transform_bounds(src.crs, wgs84, *src.bounds)` before comparing GPS lat/lon to tile bounds. Never compare degree coordinates to UTM meter coordinates.
 - **Band order for Clay**: B02, B03, B04, B05, B06, B07, B08, B8A, B11, B12 (Clay's `sentinel-2-l2a` platform order). Wavelengths in micrometers.
+- **GPS merge precision**: CSV round-trips introduce sub-micron floating-point drift. `merge_temporal.py` rounds to 6 dp before inner join. Always verify no rows are dropped (warning is printed).
+- **Band names in `_patch_quality`**: Always pass the correct `band_names` list when calling `_patch_quality`. Omitting it defaults to S2 indices, which are wrong for Landsat patches.
+- **Composite band count guard**: `_composite_s2_patch` only stacks patches with matching band counts. Mixed-source or partial tiles are silently skipped. Check tile count in printed output if composited result looks sparse.
 
 ## Clay Model Loading
 

@@ -332,6 +332,22 @@ SoilScan-Sentinel2/
 
 ---
 
+## Implementation Notes
+
+### GPS Merge Precision
+`merge_temporal.py` rounds latitude/longitude to 6 decimal places (~0.1 m) before the inner join. CSV read/write introduces sub-micron floating-point drift that silently drops rows when merging two separately-written files. A warning is printed if any rows are dropped after the join.
+
+### Median Patch Compositing
+When `--composite` is passed to `extract_clay_embeddings.py`, all cloud-free `.SAFE` directories covering a GPS point are stacked and pixel-wise `nanmedian` is taken. This reduces atmospheric noise and cloud shadow artefacts at no extra download cost (uses tiles already on disk). Only patches with matching band counts are stacked — mismatched tiles (e.g. partial S2 products) are silently skipped.
+
+### Band Index Safety
+`_patch_quality` accepts an explicit `band_names` list so that Landsat and S2 patches both resolve B04/B08 (or their equivalents) by name rather than by fixed position. Callers must pass the correct list; defaulting to `S2_BAND_NAMES` when omitted keeps backwards compatibility.
+
+### Deduplication
+`deduplicate_gps` collapses multiple AgriCapture shots at the same GPS point. Label columns use mode (most frequent value) so the result is always a valid original label rather than a non-existent interpolated value. All-NaN label groups return `NaN` (which is then treated as missing and dropped before training).
+
+---
+
 ## Acknowledgments
 
 Based on [cvims/AgroLens](https://github.com/cvims/AgroLens). Clay foundation model by [Made With Clay](https://github.com/Clay-foundation/model).
