@@ -1435,11 +1435,10 @@ if __name__ == "__main__":
         loc_col = next((c for c in ["barangay", "municipality"] if c in df.columns), None)
         if loc_col:
             before = len(df)
-            df = df[df[loc_col].str.lower() == args.filter_barangay.lower()].reset_index(drop=True)
-            X = X.loc[df.index] if hasattr(X, 'loc') else X[df.index]
-            groups = groups.loc[df.index] if hasattr(groups, 'loc') else groups[df.index]
-            X = X.reset_index(drop=True)
-            groups = groups.reset_index(drop=True)
+            mask = df[loc_col].str.lower() == args.filter_barangay.lower()
+            df     = df[mask].reset_index(drop=True)
+            X      = (X.loc[mask] if hasattr(X, "loc") else X[mask.values]).reset_index(drop=True)
+            groups = (groups.loc[mask] if hasattr(groups, "loc") else groups[mask.values]).reset_index(drop=True)
             print(f"Filtered to {args.filter_barangay}: {before} -> {len(df)} rows")
     print_data_collection_guidance(df, output_dir=args.output_dir)
     preprocessor = build_pipeline(num_feat, cat_feat)
