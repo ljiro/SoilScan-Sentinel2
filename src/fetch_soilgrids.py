@@ -60,6 +60,9 @@ _D_FACTOR = {
 # CRS of SoilGrids COG files
 _SG_CRS = "ESRI:54052"
 
+# Populated by _patch_dns_to_google; used by COG path to bypass GDAL DNS
+_ISRIC_IP_CACHE: dict[str, str] = {}
+
 
 def _resolve_via_nslookup(hostname: str) -> str | None:
     """Use nslookup (Windows built-in) to resolve hostname via Google 8.8.8.8.
@@ -124,6 +127,8 @@ def _patch_dns_to_google():
         print("  DNS override: could not resolve ISRIC hosts via 8.8.8.8")
         return
 
+    global _ISRIC_IP_CACHE
+    _ISRIC_IP_CACHE = _ip_cache
     print(f"  DNS override active: {_ip_cache}")
     _orig = socket.getaddrinfo
 
@@ -137,9 +142,38 @@ def _patch_dns_to_google():
 
 # ── connectivity check ────────────────────────────────────────────────────────
 
+def _cog_url(prop: str, depth: str) -> str:
+    """Build the /vsicurl/ URL for a SoilGrids COG file.
+
+    If files.isric.org resolved via our DNS override, connect directly to the IP
+    and pass Host + disable SSL peer verification so GDAL doesn't do its own DNS.
+    """
+    ip = _ISRIC_IP_CACHE.get("files.isric.org")
+    host = ip if ip else "files.isric.org"
+    return f"/vsicurl/https://{host}/soilgrids/latest/data/{prop}/{prop}_{depth}_mean.tif"
+
+
+def _gdal_cog_env() -> dict:
+    """GDAL env vars needed when connecting to files.isric.org via direct IP."""
+    env = {"GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR"}
+    if _ISRIC_IP_CACHE.get("files.isric.org"):
+        env["GDAL_HTTP_UNSAFESSL"]    = "YES"
+        env["GDAL_HTTP_HEADER_FILE"]  = _write_host_header("files.isric.org")
+    return env
+
+
+def _write_host_header(hostname: str) -> str:
+    """Write a GDAL HTTP header file with Host: <hostname> and return its path."""
+    import tempfile
+    path = os.path.join(tempfile.gettempdir(), "soilgrids_host_header.txt")
+    with open(path, "w") as f:
+        f.write(f"Host: {hostname}\r\n")
+    return path
+
+
 def _check_connectivity() -> str:
-    """Return 'rest' if any REST endpoint is reachable, 'cog' if only files.isric.org
-    is reachable, or 'none' if everything is blocked."""
+    """Return 'rest' if any REST endpoint is reachable, 'cog' if files.isric.org
+    is reachable (via IP or hostname), or 'none' if everything is blocked."""
     for url in _REST_URLS:
         try:
             r = requests.get(url, params={"lon": 120.59, "lat": 16.45,
@@ -150,12 +184,14 @@ def _check_connectivity() -> str:
         except Exception:
             pass
 
-    # Test COG endpoint
-    test_url = f"/vsicurl/{_COG_BASE}/phh2o/phh2o_0-5cm_mean.tif"
+    # Test COG via GDAL (uses IP directly if DNS override resolved files.isric.org)
     try:
         import rasterio
-        with rasterio.open(test_url) as _:
-            return "cog"
+        test_url = _cog_url("phh2o", "0-5cm")
+        gdal_env = _gdal_cog_env()
+        with rasterio.Env(**gdal_env):
+            with rasterio.open(test_url):
+                return "cog"
     except Exception:
         pass
 
@@ -194,18 +230,19 @@ def _fetch_rest(lat: float, lon: float, retries: int = 3) -> dict:
 def _build_cog_cache() -> dict[str, object]:
     """Open all COG files once and return {col_name: rasterio_dataset}."""
     import rasterio
-    from rasterio.warp import transform as rio_transform
 
-    datasets = {}
-    for prop in PROPERTIES:
-        for depth in DEPTHS:
-            col  = f"sg_{prop}_{depth}"
-            path = f"/vsicurl/{_COG_BASE}/{prop}/{prop}_{depth}_mean.tif"
-            try:
-                ds = rasterio.open(path)
-                datasets[col] = ds
-            except Exception as exc:
-                print(f"    WARNING: could not open COG {path}: {exc}")
+    gdal_env  = _gdal_cog_env()
+    datasets  = {}
+    with rasterio.Env(**gdal_env):
+        for prop in PROPERTIES:
+            for depth in DEPTHS:
+                col  = f"sg_{prop}_{depth}"
+                path = _cog_url(prop, depth)
+                try:
+                    ds = rasterio.open(path)
+                    datasets[col] = ds
+                except Exception as exc:
+                    print(f"    WARNING: could not open COG for {col}: {exc}")
     return datasets
 
 
@@ -213,24 +250,26 @@ def _fetch_cog(lat: float, lon: float, datasets: dict) -> dict:
     """Sample all open COG datasets at (lat, lon)."""
     import rasterio
     from rasterio.warp import transform as rio_transform
+    from rasterio.windows import Window
 
+    gdal_env = _gdal_cog_env()
     out = {}
-    for col, ds in datasets.items():
-        try:
-            xs, ys = rio_transform("EPSG:4326", ds.crs, [lon], [lat])
-            row, col_idx = ds.index(xs[0], ys[0])
-            from rasterio.windows import Window
-            win   = Window(max(0, col_idx - 1), max(0, row - 1), 3, 3)
-            patch = ds.read(1, window=win).astype(float)
-            patch[patch == ds.nodata] = np.nan
-            raw = float(np.nanmean(patch))
-
-            # Parse property name from column name (sg_phh2o_0-5cm → phh2o)
-            prop     = col[3:col.rindex("_", 0, col.rindex("-") - 2)]
-            d_factor = _D_FACTOR.get(prop, 1)
-            out[col] = raw / d_factor if np.isfinite(raw) else np.nan
-        except Exception:
-            out[col] = np.nan
+    with rasterio.Env(**gdal_env):
+        for col, ds in datasets.items():
+            try:
+                xs, ys = rio_transform("EPSG:4326", ds.crs, [lon], [lat])
+                row, col_idx = ds.index(xs[0], ys[0])
+                win   = Window(max(0, col_idx - 1), max(0, row - 1), 3, 3)
+                patch = ds.read(1, window=win).astype(float)
+                nodata = ds.nodata
+                if nodata is not None:
+                    patch[patch == nodata] = np.nan
+                raw = float(np.nanmean(patch))
+                prop     = col[3:col.rindex("_", 0, col.rindex("-") - 2)]
+                d_factor = _D_FACTOR.get(prop, 1)
+                out[col] = raw / d_factor if np.isfinite(raw) else np.nan
+            except Exception:
+                out[col] = np.nan
     return out
 
 
