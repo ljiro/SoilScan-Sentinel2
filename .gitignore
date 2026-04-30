@@ -23,3 +23,6 @@ pycache/
 Thumbs.db
 # SQLite cache files
 *.sqlite
+
+# Claude Code project instructions (local only)
+CLAUDE.md
