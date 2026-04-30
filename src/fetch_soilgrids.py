@@ -155,10 +155,18 @@ def _cog_url(prop: str, depth: str) -> str:
 
 def _gdal_cog_env() -> dict:
     """GDAL env vars needed when connecting to files.isric.org via direct IP."""
-    env = {"GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR"}
+    env = {
+        "GDAL_DISABLE_READDIR_ON_OPEN":        "EMPTY_DIR",
+        "CPL_VSIL_CURL_ALLOWED_EXTENSIONS":    ".tif,.tiff",
+        "GDAL_HTTP_MAX_RETRY":                  "2",
+        "GDAL_HTTP_RETRY_DELAY":                "1",
+    }
     if _ISRIC_IP_CACHE.get("files.isric.org"):
-        env["GDAL_HTTP_UNSAFESSL"]    = "YES"
-        env["GDAL_HTTP_HEADER_FILE"]  = _write_host_header("files.isric.org")
+        # Connecting to IP directly — skip all SSL certificate checks
+        env["GDAL_HTTP_UNSAFESSL"]        = "YES"
+        env["GDAL_HTTP_SSL_VERIFYPEER"]   = "NO"
+        env["GDAL_HTTP_SSL_VERIFYHOST"]   = "NO"
+        env["GDAL_HTTP_HEADER_FILE"]      = _write_host_header("files.isric.org")
     return env
 
 
@@ -184,16 +192,22 @@ def _check_connectivity() -> str:
         except Exception:
             pass
 
-    # Test COG via GDAL (uses IP directly if DNS override resolved files.isric.org)
+    # Set GDAL SSL env vars at OS level before rasterio initialises GDAL
+    gdal_env = _gdal_cog_env()
+    for k, v in gdal_env.items():
+        os.environ[k] = v
+
+    # Test COG via GDAL
     try:
         import rasterio
         test_url = _cog_url("phh2o", "0-5cm")
-        gdal_env = _gdal_cog_env()
+        print(f"  COG test URL : {test_url}")
         with rasterio.Env(**gdal_env):
-            with rasterio.open(test_url):
+            with rasterio.open(test_url) as src:
+                print(f"  COG opened OK — CRS: {src.crs}, size: {src.width}×{src.height}")
                 return "cog"
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"  COG test failed: {exc}")
 
     return "none"
 
