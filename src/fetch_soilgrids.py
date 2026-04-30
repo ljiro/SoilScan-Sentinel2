@@ -61,34 +61,78 @@ _D_FACTOR = {
 _SG_CRS = "ESRI:54052"
 
 
-def _patch_dns_to_google():
-    """Monkey-patch socket.getaddrinfo to resolve ISRIC hostnames via Google DNS 8.8.8.8.
+def _resolve_via_nslookup(hostname: str) -> str | None:
+    """Use nslookup (Windows built-in) to resolve hostname via Google 8.8.8.8.
+    Returns first IPv4 or IPv6 address found, or None."""
+    import subprocess
+    for qtype in ("-type=A", "-type=AAAA"):
+        try:
+            out = subprocess.run(
+                ["nslookup", qtype, hostname, "8.8.8.8"],
+                capture_output=True, text=True, timeout=10,
+            ).stdout
+            # Lines after the server block that start with "Address:" are the answers
+            past_server = False
+            for line in out.splitlines():
+                if "8.8.8.8" in line:
+                    past_server = True
+                    continue
+                if past_server and line.strip().lower().startswith("address:"):
+                    ip = line.split(":", 1)[1].strip().split("#")[0].strip()
+                    if ip:
+                        return ip
+        except Exception:
+            pass
+    return None
 
-    Cloudflare 1.1.1.1 (Families) can block ISRIC domains. This override resolves
-    only the known ISRIC hostnames through Google DNS so the rest of the system
-    is unaffected.
+
+def _patch_dns_to_google():
+    """Override socket.getaddrinfo for ISRIC hostnames to use Google DNS 8.8.8.8.
+
+    Cloudflare 1.1.1.1 (Families) blocks ISRIC domains. This patches only
+    those hostnames — the rest of the system DNS is unaffected.
+    Uses nslookup (Windows built-in, no extra packages needed), with dnspython
+    as an optional faster alternative.
     """
+    _isric_hosts = {"api.isric.org", "rest.soilgrids.org", "files.isric.org"}
+    _ip_cache: dict[str, str] = {}
+
+    # Try dnspython first (faster, no subprocess)
     try:
         import dns.resolver
+        _res = dns.resolver.Resolver()
+        _res.nameservers = ["8.8.8.8"]
+        for host in _isric_hosts:
+            for qtype in ("A", "AAAA"):
+                try:
+                    ip = str(_res.resolve(host, qtype)[0])
+                    _ip_cache[host] = ip
+                    break
+                except Exception:
+                    pass
     except ImportError:
-        return  # dnspython not installed — skip silently
+        pass  # fall through to nslookup
 
-    _isric_hosts = {"api.isric.org", "rest.soilgrids.org", "files.isric.org"}
-    _resolver = dns.resolver.Resolver()
-    _resolver.nameservers = ["8.8.8.8"]
-    _original_getaddrinfo = socket.getaddrinfo
+    # Fallback: nslookup subprocess (Windows built-in)
+    if not _ip_cache:
+        for host in _isric_hosts:
+            ip = _resolve_via_nslookup(host)
+            if ip:
+                _ip_cache[host] = ip
 
-    def _patched_getaddrinfo(host, port, *args, **kwargs):
-        if host in _isric_hosts:
-            try:
-                answers = _resolver.resolve(host, "A")
-                ip = str(answers[0])
-                return _original_getaddrinfo(ip, port, *args, **kwargs)
-            except Exception:
-                pass
-        return _original_getaddrinfo(host, port, *args, **kwargs)
+    if not _ip_cache:
+        print("  DNS override: could not resolve ISRIC hosts via 8.8.8.8")
+        return
 
-    socket.getaddrinfo = _patched_getaddrinfo
+    print(f"  DNS override active: {_ip_cache}")
+    _orig = socket.getaddrinfo
+
+    def _patched(host, port, family=0, type=0, proto=0, flags=0):
+        if host in _ip_cache:
+            return _orig(_ip_cache[host], port, family, type, proto, flags)
+        return _orig(host, port, family, type, proto, flags)
+
+    socket.getaddrinfo = _patched
 
 
 # ── connectivity check ────────────────────────────────────────────────────────
