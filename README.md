@@ -164,13 +164,27 @@ python src/extract_clay_embeddings.py \
 
 ### SoilGrids (ISRIC)
 
-Global 250 m soil property predictions queried from the ISRIC REST API. One API call per unique GPS point — no download or credentials required.
+Global 250 m soil property predictions from ISRIC SoilGrids v2. Adds columns: `sg_phh2o_0-5cm`, `sg_soc_0-5cm`, `sg_nitrogen_0-5cm`, `sg_clay_0-5cm`, `sg_sand_0-5cm`, `sg_cec_0-5cm` (and `5-15cm` equivalents). These are auto-detected by `train_ordinal.py`.
+
+**Option A — REST API** (simplest, no download needed):
 
 ```cmd
 python src/fetch_soilgrids.py data/processed/field_data_with_clay.csv --output data/processed/field_data_with_soilgrids.csv
 ```
 
-Adds columns: `sg_phh2o_0-5cm`, `sg_soc_0-5cm`, `sg_nitrogen_0-5cm`, `sg_clay_0-5cm`, `sg_sand_0-5cm`, `sg_cec_0-5cm` (and `5-15cm` equivalents). These are auto-detected by `train_ordinal.py`.
+**Option B — Local VRT mode** (for networks that block `api.isric.org`, e.g. Cloudflare 1.1.1.1):
+
+1. Download 12 VRT index files (~3.5 MB each) from ISRIC — browse to `https://files.isric.org/soilgrids/latest/data/` and download `<PROP>/<PROP>_<DEPTH>_mean.vrt` for all combinations of `phh2o soc nitrogen clay sand cec` × `0-5cm 5-15cm`. Save them to `data/raw/soilgrids/` preserving the `<PROP>/` subdirectory.
+
+2. Run with `--local-data-dir`:
+
+```cmd
+python src/fetch_soilgrids.py data/processed/field_data_with_clay.csv ^
+    --local-data-dir data/raw/soilgrids ^
+    --output data/processed/field_data_with_soilgrids.csv
+```
+
+On first run, the script parses each VRT to identify the single tile covering your GPS points, downloads it (~10–30 MB) using Python `requests` (bypasses GDAL DNS), and caches it alongside the VRT. Subsequent runs reuse the cached tiles.
 
 ### Sentinel-1 SAR
 
