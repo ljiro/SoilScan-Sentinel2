@@ -160,6 +160,30 @@ python src/extract_clay_embeddings.py \
 
 ---
 
+## Additional Data Sources
+
+### SoilGrids (ISRIC)
+
+Global 250 m soil property predictions queried from the ISRIC REST API. One API call per unique GPS point — no download or credentials required.
+
+```cmd
+python src/fetch_soilgrids.py data/processed/field_data_with_clay.csv --output data/processed/field_data_with_soilgrids.csv
+```
+
+Adds columns: `sg_phh2o_0-5cm`, `sg_soc_0-5cm`, `sg_nitrogen_0-5cm`, `sg_clay_0-5cm`, `sg_sand_0-5cm`, `sg_cec_0-5cm` (and `5-15cm` equivalents). These are auto-detected by `train_ordinal.py`.
+
+### Sentinel-1 SAR
+
+C-band SAR backscatter (VV, VH) from Copernicus CDSE. Cloud-penetrating — useful for soil moisture and surface roughness features. Requires the same CDSE credentials as `data_fetcher_copernicus.py`.
+
+```cmd
+python src/fetch_sentinel1.py data/processed/field_data_with_clay.csv --date-range 2025-10-01 2025-11-30 --output data/processed/field_data_with_s1.csv
+```
+
+Adds columns: `S1_VV`, `S1_VH`, `S1_VV_VH` (log10-scaled backscatter and VV/VH ratio). Auto-detected by `train_ordinal.py`.
+
+---
+
 ## Feature Sets
 
 Features are auto-detected from column names in the input CSV:
@@ -169,6 +193,8 @@ Features are auto-detected from column names in the input CSV:
 | `patch_*` | Patch statistics (no model) | 64 |
 | `clay_*` | Clay v1.5 encoder embeddings | 1024 |
 | `resnet_*` | ResNet-50 pretrained embeddings *(available, not yet evaluated)* | 2048 (or 512 for ResNet-18) |
+| `S1_VV`, `S1_VH`, `S1_VV_VH` | Sentinel-1 SAR backscatter | 3 |
+| `sg_*` | SoilGrids v2 soil property priors | 12 |
 | `dem_*`, `slope`, `aspect`, `altitude` | Terrain | ~5 |
 | Raw S2 bands (`B02`–`B12`, `B8A`) | Direct pixel values | 10–12 |
 
@@ -317,6 +343,8 @@ SoilScan-Sentinel2/
 │   ├── train_ordinal.py                      # Classification + regression training
 │   ├── analyze_vegetation_timeline.py        # Monthly NDVI profile → peak date-range finder
 │   ├── merge_temporal.py                     # Merge two temporal feature CSVs (adds _oct/_dec suffixes)
+│   ├── fetch_soilgrids.py                    # Add SoilGrids v2 soil property priors (sg_* columns)
+│   ├── fetch_sentinel1.py                    # Add Sentinel-1 GRD VV/VH backscatter (S1_* columns)
 │   └── .clay_src/                            # Cached Clay model source (auto-downloaded)
 ├── .env.example
 ├── requirements.txt
