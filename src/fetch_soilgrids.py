@@ -27,7 +27,16 @@ import numpy as np
 import pandas as pd
 import requests
 
-SOILGRIDS_URL = "https://rest.soilgrids.org/soilgrids/v2.0/properties/query"
+# Primary and fallback endpoints (ISRIC migrated from rest.soilgrids.org → api.isric.org)
+_SOILGRIDS_URLS = [
+    "https://api.isric.org/soilgrids/v2.0/properties/query",
+    "https://rest.soilgrids.org/soilgrids/v2.0/properties/query",
+]
+
+# SoilGrids is 250 m resolution (~0.002 degrees). Round GPS to this grid before
+# deduplication so we don't make hundreds of calls for points that map to the
+# same 250 m pixel.
+_SG_GRID_DEG = 0.002
 
 PROPERTIES = ["phh2o", "soc", "nitrogen", "clay", "sand", "cec"]
 DEPTHS     = ["0-5cm", "5-15cm"]
@@ -46,69 +55,79 @@ _D_FACTOR = {
 
 
 def fetch_point(lat: float, lon: float, retries: int = 3) -> dict:
-    """Query SoilGrids for one GPS point. Returns dict of sg_* column values."""
-    for attempt in range(retries):
-        try:
-            r = requests.get(
-                SOILGRIDS_URL,
-                params={
-                    "lon":      lon,
-                    "lat":      lat,
-                    "property": PROPERTIES,
-                    "depth":    DEPTHS,
-                    "value":    "mean",
-                },
-                timeout=30,
-            )
-            r.raise_for_status()
-            break
-        except Exception as exc:
-            if attempt == retries - 1:
-                print(f"    WARNING: SoilGrids failed for ({lat:.4f}, {lon:.4f}): {exc}")
-                return {}
-            time.sleep(2 ** attempt)
+    """Query SoilGrids for one GPS point. Tries each endpoint in turn."""
+    last_exc = None
+    for url in _SOILGRIDS_URLS:
+        for attempt in range(retries):
+            try:
+                r = requests.get(
+                    url,
+                    params={
+                        "lon":      lon,
+                        "lat":      lat,
+                        "property": PROPERTIES,
+                        "depth":    DEPTHS,
+                        "value":    "mean",
+                    },
+                    timeout=30,
+                )
+                r.raise_for_status()
+                # Parse and return on first success
+                out = {}
+                for layer in r.json().get("properties", {}).get("layers", []):
+                    prop     = layer["name"]
+                    d_factor = _D_FACTOR.get(prop, 1)
+                    for depth_info in layer.get("depths", []):
+                        depth = depth_info["label"]
+                        val   = depth_info.get("values", {}).get("mean")
+                        out[f"sg_{prop}_{depth}"] = (val / d_factor) if val is not None else np.nan
+                return out
+            except Exception as exc:
+                last_exc = exc
+                if attempt < retries - 1:
+                    time.sleep(2 ** attempt)
 
-    out = {}
-    for layer in r.json().get("properties", {}).get("layers", []):
-        prop = layer["name"]
-        d_factor = _D_FACTOR.get(prop, 1)
-        for depth_info in layer.get("depths", []):
-            depth = depth_info["label"]  # e.g. "0-5cm"
-            val   = depth_info.get("values", {}).get("mean")
-            col   = f"sg_{prop}_{depth}"
-            out[col] = (val / d_factor) if val is not None else np.nan
-    return out
+    print(f"    WARNING: SoilGrids failed for ({lat:.4f}, {lon:.4f}): {last_exc}")
+    return {}
+
+
+def _sg_key(lat: float, lon: float) -> tuple[float, float]:
+    """Round to the SoilGrids 250 m grid (~0.002 deg) to avoid redundant API calls."""
+    return (
+        round(round(lat / _SG_GRID_DEG) * _SG_GRID_DEG, 6),
+        round(round(lon / _SG_GRID_DEG) * _SG_GRID_DEG, 6),
+    )
 
 
 def fetch_all(df: pd.DataFrame, delay: float = 0.5) -> pd.DataFrame:
-    """Fetch SoilGrids for every unique (lat, lon) pair; join back to df."""
-    pts = (
-        df[["latitude", "longitude"]]
-        .round(4)
-        .drop_duplicates()
-        .reset_index(drop=True)
-    )
-    print(f"Querying SoilGrids for {len(pts)} unique GPS points...")
+    """Fetch SoilGrids for every unique 250 m cell; join back to df."""
+    df["_sg_lat"] = df["latitude"].apply(lambda x: _sg_key(x, 0.0)[0])
+    df["_sg_lon"] = df["longitude"].apply(lambda x: _sg_key(0.0, x)[1])
+
+    pts = df[["_sg_lat", "_sg_lon"]].drop_duplicates().reset_index(drop=True)
+    print(f"Querying SoilGrids for {len(pts)} unique 250 m cells "
+          f"(from {len(df)} rows)...")
 
     cache: dict[tuple, dict] = {}
     for i, row in pts.iterrows():
-        key = (round(row.latitude, 4), round(row.longitude, 4))
-        print(f"  [{i+1}/{len(pts)}] ({key[0]}, {key[1]})", end="  ", flush=True)
-        result = fetch_point(row.latitude, row.longitude)
+        key = (row["_sg_lat"], row["_sg_lon"])
+        print(f"  [{i+1}/{len(pts)}] ({key[0]:.4f}, {key[1]:.4f})", end="  ", flush=True)
+        result = fetch_point(key[0], key[1])
         cache[key] = result
         n_ok = sum(1 for v in result.values() if not (isinstance(v, float) and np.isnan(v)))
         print(f"{n_ok} values" if result else "no data")
-        time.sleep(delay)
+        if i < len(pts) - 1:
+            time.sleep(delay)
 
     sg_rows = []
     for _, row in df.iterrows():
-        key = (round(row["latitude"], 4), round(row["longitude"], 4))
+        key = (row["_sg_lat"], row["_sg_lon"])
         sg_rows.append(cache.get(key, {}))
 
+    df = df.drop(columns=["_sg_lat", "_sg_lon"])
     sg_df = pd.DataFrame(sg_rows, index=df.index)
 
-    # Report coverage
-    if not sg_df.empty:
+    if not sg_df.empty and len(sg_df.columns):
         first_col = sg_df.columns[0]
         n_valid = sg_df[first_col].notna().sum()
         print(f"\nSoilGrids coverage: {n_valid}/{len(df)} rows have data")
