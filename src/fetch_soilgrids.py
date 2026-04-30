@@ -25,6 +25,7 @@ Usage:
 
 import argparse
 import os
+import socket
 import time
 
 import numpy as np
@@ -58,6 +59,36 @@ _D_FACTOR = {
 
 # CRS of SoilGrids COG files
 _SG_CRS = "ESRI:54052"
+
+
+def _patch_dns_to_google():
+    """Monkey-patch socket.getaddrinfo to resolve ISRIC hostnames via Google DNS 8.8.8.8.
+
+    Cloudflare 1.1.1.1 (Families) can block ISRIC domains. This override resolves
+    only the known ISRIC hostnames through Google DNS so the rest of the system
+    is unaffected.
+    """
+    try:
+        import dns.resolver
+    except ImportError:
+        return  # dnspython not installed — skip silently
+
+    _isric_hosts = {"api.isric.org", "rest.soilgrids.org", "files.isric.org"}
+    _resolver = dns.resolver.Resolver()
+    _resolver.nameservers = ["8.8.8.8"]
+    _original_getaddrinfo = socket.getaddrinfo
+
+    def _patched_getaddrinfo(host, port, *args, **kwargs):
+        if host in _isric_hosts:
+            try:
+                answers = _resolver.resolve(host, "A")
+                ip = str(answers[0])
+                return _original_getaddrinfo(ip, port, *args, **kwargs)
+            except Exception:
+                pass
+        return _original_getaddrinfo(host, port, *args, **kwargs)
+
+    socket.getaddrinfo = _patched_getaddrinfo
 
 
 # ── connectivity check ────────────────────────────────────────────────────────
@@ -169,6 +200,7 @@ def _sg_key(lat: float, lon: float) -> tuple[float, float]:
 
 
 def fetch_all(df: pd.DataFrame, delay: float = 0.5) -> pd.DataFrame:
+    _patch_dns_to_google()
     print("Checking ISRIC connectivity...")
     mode = _check_connectivity()
     if mode == "rest":
