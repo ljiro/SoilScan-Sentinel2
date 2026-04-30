@@ -3,8 +3,10 @@ Ordinal classification (Low/Medium/High for N/P/K; 11-class CPR scale for pH)
 using XGBoost, Random Forest, and SVM with spatial GroupKFold.
 Expects a merged dataset: Field Data + Satellite Bands + STK ground truth.
 """
+import json
 import os
 
+import joblib
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -951,7 +953,7 @@ def train_and_evaluate(df, X, groups, target_col, preprocessor,
     results_by_model = {}
     cms              = {}
     importances_by_model = {}   # model_name -> (feature_names, importances_array)
-    best_model, best_oa = None, -1
+    best_model, best_model_name, best_oa = None, None, -1
 
     for model_name, model in models.items():
         print(f"\n  Training {model_name}...")
@@ -967,7 +969,7 @@ def train_and_evaluate(df, X, groups, target_col, preprocessor,
         results_by_model[model_name] = metrics_dict
         cms[model_name] = cm
         if metrics_dict["oa"] > best_oa:
-            best_oa, best_model = metrics_dict["oa"], model
+            best_oa, best_model, best_model_name = metrics_dict["oa"], model, model_name
 
         # Feature importance for every model
         print(f"  Computing feature importance for {model_name}...")
@@ -989,7 +991,7 @@ def train_and_evaluate(df, X, groups, target_col, preprocessor,
         plot_confusion_matrix(cms[model_name], f"{target_col}_{model_name}",
                               figures_dir, class_names=class_names_short)
 
-    return best_model, list(results_by_model.values()), importances_by_model
+    return best_model, best_model_name, list(results_by_model.values()), importances_by_model
 
 
 def save_summary_table(results, out_dir="outputs"):
@@ -998,6 +1000,54 @@ def save_summary_table(results, out_dir="outputs"):
     path = os.path.join(out_dir, "metrics_summary.csv")
     pd.DataFrame(results).to_csv(path, index=False)
     print(f"\nSummary table saved: {path}")
+
+
+def save_best_model(best_model, best_model_name, preprocessor,
+                    X_valid, y_valid, target_col, class_names,
+                    feature_names, models_dir="outputs/models"):
+    """Retrain the best CV model on all available data and save to disk.
+
+    Saves two files per target:
+      outputs/models/{target}_{model_name}.joblib  — sklearn Pipeline (preprocessor + model)
+      outputs/models/{target}_{model_name}_meta.json — feature names, class labels, model type
+    """
+    from sklearn.pipeline import Pipeline
+    from sklearn.base import clone
+
+    os.makedirs(models_dir, exist_ok=True)
+
+    model_clone = clone(best_model)
+    sw = compute_sample_weight("balanced", y_valid)
+    Xp = preprocessor.fit_transform(X_valid)
+    if best_model_name in ("SVM", "FCNN"):
+        model_clone.fit(Xp, y_valid)
+    else:
+        model_clone.fit(Xp, y_valid, sample_weight=sw)
+
+    pipeline = Pipeline([
+        ("preprocessor", preprocessor),
+        ("classifier",   model_clone),
+    ])
+
+    slug = f"{target_col}_{best_model_name}"
+    model_path = os.path.join(models_dir, f"{slug}.joblib")
+    meta_path  = os.path.join(models_dir, f"{slug}_meta.json")
+
+    joblib.dump(pipeline, model_path)
+
+    meta = {
+        "target":        target_col,
+        "model":         best_model_name,
+        "feature_names": list(feature_names),
+        "class_names":   list(class_names),
+        "n_classes":     len(class_names),
+        "trained_on_n":  int(len(y_valid)),
+    }
+    with open(meta_path, "w") as f:
+        json.dump(meta, f, indent=2)
+
+    print(f"  Model saved : {model_path}")
+    print(f"  Metadata    : {meta_path}")
 
 
 def print_data_collection_guidance(df: pd.DataFrame, output_dir: str = "outputs") -> None:
@@ -1420,6 +1470,10 @@ if __name__ == "__main__":
                         help="Train regressors (XGBoost, RF, SVR, MLP) on the raw ordinal "
                              "targets instead of classifiers. Reports RMSE, MAE, R2, Spearman "
                              "rho, and rounded-to-class Kappa for comparison.")
+    parser.add_argument("--save-models", action="store_true",
+                        help="Retrain the best model per target on all available data and save "
+                             "as a joblib Pipeline to outputs/models/. "
+                             "Also writes a sidecar _meta.json with feature names and class labels.")
     args = parser.parse_args()
 
     if not os.path.isfile(args.data_path):
@@ -1457,7 +1511,7 @@ if __name__ == "__main__":
             )
             all_results.extend(metrics_list)
         else:
-            _, metrics_list, imp_by_model = train_and_evaluate(
+            best_model, best_model_name, metrics_list, imp_by_model = train_and_evaluate(
                 df, X, groups, t, preprocessor,
                 num_feat, cat_feat, figures_dir=args.figures_dir,
                 use_smote=args.smote,
@@ -1468,6 +1522,27 @@ if __name__ == "__main__":
             all_results.extend(metrics_list)
             for model_name, (feat_names, imps) in imp_by_model.items():
                 all_importances[(t, model_name)] = (feat_names, imps)
+
+            if args.save_models and best_model is not None:
+                valid_idx   = df[t].notna()
+                X_valid     = X[valid_idx]
+                y_valid     = df.loc[valid_idx, t].astype(int)
+                t_meta      = df.attrs.get("ph_targets", [])
+                t_vals      = df.attrs.get("ph_values",  [])
+                is_ph       = t in t_meta
+                if is_ph:
+                    cls_names = [str(v) for v in t_vals]
+                elif t in NUTRIENT_RANGES_SHORT and NUTRIENT_RANGES_SHORT[t]:
+                    cls_names = [NUTRIENT_RANGES_SHORT[t][i]
+                                 for i in sorted(NUTRIENT_RANGES_SHORT[t])]
+                else:
+                    cls_names = CLASS_NAMES
+                models_dir = os.path.join(args.output_dir, "models")
+                save_best_model(
+                    best_model, best_model_name, preprocessor,
+                    X_valid, y_valid, t, cls_names, num_feat + cat_feat,
+                    models_dir=models_dir,
+                )
 
     if all_results:
         save_summary_table(all_results, out_dir=args.output_dir)

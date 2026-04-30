@@ -262,6 +262,7 @@ Generate S3 credentials at: **dataspace.copernicus.eu → User Settings → S3 A
 ```bash
 # 1. Install dependencies
 pip install -r requirements.txt
+pip install joblib  # for model export (usually already installed via scikit-learn)
 pip install lightning python-box einops timm  # for Clay embeddings
 
 # 2. Set credentials
@@ -279,12 +280,13 @@ set HF_HOME=D:\HuggingFace
 python src/extract_clay_embeddings.py --source sentinel2
 
 # 5. Train and evaluate
-python src/train_ordinal.py data/processed/field_data_with_clay.csv \
-  --deduplicate --filter-barangay Paoay
+python src/train_ordinal.py data/processed/field_data_with_clay.csv --deduplicate --filter-barangay Paoay
 
 # With hyperparameter tuning (Optuna)
-python src/train_ordinal.py data/processed/field_data_with_clay.csv \
-  --deduplicate --filter-barangay Paoay --tune
+python src/train_ordinal.py data/processed/field_data_with_clay.csv --deduplicate --filter-barangay Paoay --tune
+
+# With model export (saves best model per target to outputs/models/)
+python src/train_ordinal.py data/processed/field_data_with_clay.csv --deduplicate --filter-barangay Paoay --save-models
 ```
 
 ---
@@ -304,6 +306,9 @@ SoilScan-Sentinel2/
 │       └── field_data_with_clay.csv           # + patch stats or Clay embeddings
 ├── outputs/
 │   ├── figures/                               # Confusion matrices, feature importance
+│   ├── models/                                # Exported best models (--save-models flag)
+│   │   ├── p_RandomForest.joblib              # sklearn Pipeline (preprocessor + classifier)
+│   │   └── p_RandomForest_meta.json           # Feature names, class labels, model type
 │   ├── metrics_summary.csv                    # F1 / Kappa / MAE per model/target
 │   └── feature_importances.csv               # Aggregated feature importance scores
 ├── src/
@@ -329,6 +334,34 @@ SoilScan-Sentinel2/
 **Why growing-season imagery?** The plant-stress spectral pathway for N/P/K detection requires chlorophyll and canopy responses visible only during active vegetative growth — not on bare/senescent post-harvest fields.
 
 **Why Clay over plain patch statistics?** Clay v1.5 is a geospatial Vision Transformer pretrained on multi-sensor EO data (S2, S1, Landsat, DEM) via masked autoencoding. Its 1024-dim embeddings encode spatial texture, spectral context, and multi-scale patterns that per-band statistics cannot capture.
+
+---
+
+## Model Export
+
+Pass `--save-models` to `train_ordinal.py` to save the best model per target to disk after training. The best model (highest OA across CV folds) is retrained on **all available data** before saving, so the exported model uses the full dataset rather than a single fold.
+
+Two files are written per target:
+
+| File | Contents |
+|------|----------|
+| `outputs/models/{target}_{model}.joblib` | Full sklearn `Pipeline` — preprocessor + fitted classifier |
+| `outputs/models/{target}_{model}_meta.json` | Feature names, class labels, model type, training sample count |
+
+**Usage example:**
+
+```python
+import joblib, json
+
+pipeline = joblib.load("outputs/models/p_RandomForest.joblib")
+meta     = json.load(open("outputs/models/p_RandomForest_meta.json"))
+
+# pipeline expects a DataFrame with the same feature columns as training
+y_pred = pipeline.predict(X_new[meta["feature_names"]])
+# y_pred values are integer class indices; map with meta["class_names"]
+```
+
+The Pipeline includes the full preprocessor (imputation, scaling, one-hot encoding), so you only need to supply a raw feature DataFrame — no manual preprocessing required.
 
 ---
 

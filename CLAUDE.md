@@ -55,6 +55,7 @@ outputs/metrics_summary.csv
 | `merge_temporal.py` | `--output PATH` | Output CSV path |
 | `train_ordinal.py` | `--regression` | Treat labels as continuous, clip to ordinal range |
 | `train_ordinal.py` | `--tune` | Optuna hyperparameter search |
+| `train_ordinal.py` | `--save-models` | Retrain best CV model on full data → `outputs/models/{target}_{model}.joblib` + `_meta.json` |
 | `analyze_vegetation_timeline.py` | `--months N` | How many months back to scan (default 6) |
 | `analyze_vegetation_timeline.py` | `--max-cloud N` | Max cloud cover % for tile inclusion (default 30) |
 | `analyze_vegetation_timeline.py` | `--plot` | Save matplotlib timeline PNG to outputs/ |
