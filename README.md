@@ -129,18 +129,76 @@ python src/fetch_soilgrids.py data/processed/field_data_with_clay.csv \
 
 ---
 
-## Feature Sets
+## Input Features
 
-Features are auto-detected from column names in the input CSV:
+All features are auto-detected from column names in the input CSV. The current canonical input (`field_data_growing_soilgrids.csv`) provides:
+
+### Sentinel-2 Spectral Bands (Oct–Nov 2025, growing season)
+
+| Feature | Bands | Description |
+|---------|-------|-------------|
+| Raw band values | B01–B12, B8A | 12 bands, mean pixel value over 3×3 neighbourhood |
+| Band std | B01_std–B12_std | Spatial variability within the 3×3 patch |
+
+### Computed Spectral Indices (derived from S2 bands)
+
+| Index | Formula bands | Sensitivity |
+|-------|--------------|-------------|
+| NDVI | B08, B04 | Canopy density / biomass |
+| EVI | B08, B04, B02 | Canopy density (soil-adjusted) |
+| SAVI | B08, B04 | Vegetation with soil brightness correction |
+| MSAVI | B08, B04 | Modified SAVI |
+| NDRE | B8A, B05 | Chlorophyll / nitrogen stress (red-edge) |
+| CHL_re | B8A, B05 | Chlorophyll red-edge index |
+| BSI | B11, B04, B08, B02 | Bare soil fraction |
+| BI | B04, B08 | Brightness index |
+| NDWI | B03, B08 | Water / moisture content |
+| NDMI | B08, B11 | Moisture / dry matter |
+
+### Terrain Features (DEM-derived)
+
+| Feature | Description |
+|---------|-------------|
+| `elevation_m` | Elevation above sea level |
+| `slope_deg` | Terrain slope in degrees |
+| `aspect_deg` | Slope aspect (compass direction) |
+| `twi` | Topographic wetness index |
+| `curvature` | Surface curvature |
+| `northness` | cos(aspect) — north-facing component |
+| `eastness` | sin(aspect) — east-facing component |
+
+### Microclimate (recorded at time of field sample collection)
+
+| Feature | Description |
+|---------|-------------|
+| `temperature_c` | Air temperature (°C) |
+| `humidity_percent` | Relative humidity (%) |
+| `altitude_m` | GPS-recorded altitude (m) |
+
+### SoilGrids v2 Priors (ISRIC, 250 m resolution)
+
+| Feature | Description |
+|---------|-------------|
+| `sg_phh2o_0-5cm`, `sg_phh2o_5-15cm` | Soil pH (H₂O) |
+| `sg_soc_0-5cm`, `sg_soc_5-15cm` | Soil organic carbon (dg/kg) |
+| `sg_nitrogen_0-5cm`, `sg_nitrogen_5-15cm` | Total nitrogen (cg/kg) |
+| `sg_clay_0-5cm`, `sg_clay_5-15cm` | Clay content (g/kg) |
+| `sg_sand_0-5cm`, `sg_sand_5-15cm` | Sand content (g/kg) |
+| `sg_cec_0-5cm`, `sg_cec_5-15cm` | Cation exchange capacity (mmol/kg) |
+
+### Categorical
+
+| Feature | Description |
+|---------|-------------|
+| `crops` | Crop type at the sample point (one-hot encoded) |
+
+### Additional Feature Sources (available, not yet benchmarked)
 
 | Prefix | Source | Dims |
 |--------|--------|------|
-| `patch_*` | Patch statistics (current baseline) | 64 |
-| `sg_*` | SoilGrids v2 soil property priors | 12 |
-| `dem_*`, `slope`, `aspect`, `altitude` | Terrain | ~5 |
-| Raw S2 bands (`B02`–`B12`, `B8A`) | Direct pixel values | 10–12 |
-| `clay_*` | Clay v1.5 encoder embeddings *(available, not yet evaluated)* | 1024 |
-| `resnet_*` | ResNet-50 pretrained embeddings *(available, not yet evaluated)* | 2048 |
+| `patch_*` | Patch statistics from `extract_clay_embeddings.py --source patch-stats` | 64 |
+| `clay_*` | Clay v1.5 geospatial ViT embeddings | 1024 |
+| `resnet_*` | ResNet-50 pretrained embeddings | 2048 |
 
 ---
 
