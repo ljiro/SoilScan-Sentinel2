@@ -31,6 +31,7 @@ from sklearn.inspection import permutation_importance
 from sklearn.model_selection import GroupKFold, StratifiedKFold
 from sklearn.neural_network import MLPClassifier, MLPRegressor
 from sklearn.pipeline import Pipeline
+from sklearn.decomposition import PCA
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.svm import SVC, SVR
 from sklearn.utils.class_weight import compute_sample_weight
@@ -368,16 +369,22 @@ def load_and_prepare_data(csv_path, deduplicate=False, balance_locs=False):
     )
 
 
-def build_pipeline(num_features, cat_features):
+def build_pipeline(num_features, cat_features, n_pca: int | None = None):
     """Preprocessing: impute → scale for numerics, one-hot for categorical.
 
     SimpleImputer(median) handles NaN in temporal-std features (B*_std = 0
     when only one tile was downloaded for a location).
+
+    If n_pca is given, PCA is appended after scaling (numeric branch only),
+    reducing to min(n_pca, n_features) components.
     """
-    num_pipe = Pipeline([
+    num_steps: list = [
         ("impute", SimpleImputer(strategy="median")),
         ("scale",  StandardScaler()),
-    ])
+    ]
+    if n_pca is not None:
+        num_steps.append(("pca", PCA(n_components=n_pca, random_state=42)))
+    num_pipe = Pipeline(num_steps)
     preprocessor = ColumnTransformer(
         transformers=[
             ("num", num_pipe, num_features),
@@ -400,9 +407,15 @@ def _ci95(values):
 
 def get_feature_names(preprocessor, num_features, cat_features):
     """Return the full ordered list of feature names after preprocessing."""
+    num_pipe = preprocessor.named_transformers_["num"]
+    if "pca" in num_pipe.named_steps:
+        n_comp = num_pipe.named_steps["pca"].n_components_
+        num_names = [f"PC{i+1}" for i in range(n_comp)]
+    else:
+        num_names = num_features
     ohe = preprocessor.named_transformers_["cat"]
     cat_names = list(ohe.get_feature_names_out(cat_features))
-    return num_features + cat_names
+    return num_names + cat_names
 
 
 def compute_importances(model, model_name, X_test_tr, y_test,
@@ -1480,6 +1493,9 @@ if __name__ == "__main__":
                         help="Retrain the best model per target on all available data and save "
                              "as a joblib Pipeline to outputs/models/. "
                              "Also writes a sidecar _meta.json with feature names and class labels.")
+    parser.add_argument("--pca", type=int, default=None, metavar="N",
+                        help="Reduce numeric features to N principal components before training "
+                             "(e.g. --pca 30). Helps when features >> samples.")
     args = parser.parse_args()
 
     if not os.path.isfile(args.data_path):
@@ -1501,7 +1517,9 @@ if __name__ == "__main__":
             groups = (groups.loc[mask] if hasattr(groups, "loc") else groups[mask.values]).reset_index(drop=True)
             print(f"Filtered to {args.filter_barangay}: {before} -> {len(df)} rows")
     print_data_collection_guidance(df, output_dir=args.output_dir)
-    preprocessor = build_pipeline(num_feat, cat_feat)
+    preprocessor = build_pipeline(num_feat, cat_feat, n_pca=args.pca)
+    if args.pca:
+        print(f"PCA enabled: reducing numeric features to {args.pca} components")
 
     all_results       = []
     all_importances   = {}   # (target, model) -> (feat_names, imps)
