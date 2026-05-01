@@ -1,6 +1,7 @@
 """
 Ordinal classification (Low/Medium/High for N/P/K; 11-class CPR scale for pH)
-using XGBoost, Random Forest, and SVM with spatial GroupKFold.
+using XGBoost, Random Forest, SVM, and FCNN with 5-fold StratifiedKFold (default).
+Use --spatial-kfold for GroupKFold spatial holdout by barangay.
 Expects a merged dataset: Field Data + Satellite Bands + STK ground truth.
 """
 import json
@@ -1550,10 +1551,13 @@ if __name__ == "__main__":
     parser.add_argument("--pca", type=int, default=None, metavar="N",
                         help="Reduce numeric features to N principal components before training "
                              "(e.g. --pca 30). Helps when features >> samples.")
-    parser.add_argument("--random-kfold", action="store_true",
-                        help="Use 5-fold StratifiedKFold (random) instead of spatial GroupKFold. "
-                             "Inflates metrics vs. true spatial holdout — for comparison only. "
-                             "Results saved to metrics_summary_rkf.csv.")
+    parser.add_argument("--random-kfold", action="store_true", default=True,
+                        help="Use 5-fold StratifiedKFold (random) — default. "
+                             "Results saved to metrics_summary.csv.")
+    parser.add_argument("--spatial-kfold", dest="random_kfold", action="store_false",
+                        help="Use spatial GroupKFold by barangay instead of random k-fold. "
+                             "Honest deployment metric but severely limited with only 2 groups. "
+                             "Results saved to metrics_summary_spatial.csv.")
     parser.add_argument("--midpoint-regression", action="store_true",
                         help="Map ordinal N/P/K classes to BSWM threshold midpoints "
                              "(e.g. Low P → 5.5 mg/kg) before regression. "
@@ -1587,7 +1591,9 @@ if __name__ == "__main__":
     else:
         print("Class weighting: OFF")
     if args.random_kfold:
-        print("CV mode: StratifiedKFold (random) — results saved to metrics_summary_rkf.csv")
+        print("CV mode: StratifiedKFold 5-fold (random) — results saved to metrics_summary.csv")
+    else:
+        print("CV mode: GroupKFold (spatial holdout) — results saved to metrics_summary_spatial.csv")
     if getattr(args, "midpoint_regression", False) and args.regression:
         print("Midpoint regression: mapping N/P/K ordinal classes to BSWM concentration midpoints")
         for col, mapping in NUTRIENT_MIDPOINTS.items():
@@ -1644,7 +1650,7 @@ if __name__ == "__main__":
                 )
 
     if all_results:
-        summary_file = "metrics_summary_rkf.csv" if args.random_kfold else "metrics_summary.csv"
+        summary_file = "metrics_summary.csv" if args.random_kfold else "metrics_summary_spatial.csv"
         save_summary_table(all_results, out_dir=args.output_dir, filename=summary_file)
 
     # Save importances as CSV so plot_pubmat can load them without re-training
