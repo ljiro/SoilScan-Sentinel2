@@ -67,6 +67,16 @@ NUTRIENT_RANGES_SHORT = {
     "ph": None,
 }
 
+# Class midpoints for pseudo-continuous regression (BSWM threshold midpoints + open-end estimate)
+# N: <11 → 5.5,  11-20 → 15.5,  >20 → 25.0
+# P: <11 → 5.5,  11-25 → 18.0,  >25 → 37.5
+# K: <78 → 39.0, 78-156 → 117.0, >156 → 200.0
+NUTRIENT_MIDPOINTS = {
+    "n": {0: 5.5,  1: 15.5, 2: 25.0},
+    "p": {0: 5.5,  1: 18.0, 2: 37.5},
+    "k": {0: 39.0, 1: 117.0, 2: 200.0},
+}
+
 # Average class width in real units — used to translate ordinal MAE into
 # interpretable units (mg/kg or pH units) for agronomists.
 # Each entry is (avg_step_size, unit_string).
@@ -304,12 +314,11 @@ def load_and_prepare_data(csv_path, deduplicate=False, balance_locs=False):
         if t in df.columns:
             df[t] = pd.to_numeric(df[t], errors="coerce").map(ph_mapping)
 
-    spectral_features = [
-        "B01", "B02", "B03", "B04", "B05", "B06",
-        "B07", "B08", "B8A", "B09", "B11", "B12",
-    ]
+    _S2_BANDS = ["B01", "B02", "B03", "B04", "B05", "B06",
+                 "B07", "B08", "B8A", "B09", "B11", "B12"]
+    spectral_features = [b for b in _S2_BANDS if b in df.columns]
     # Temporal std features — present when multi-tile compositing was used
-    spectral_std_features = [f"{b}_std" for b in spectral_features
+    spectral_std_features = [f"{b}_std" for b in _S2_BANDS
                              if f"{b}_std" in df.columns]
     microclimate_features = ["temperature_c", "humidity_percent", "altitude_m"]
     terrain_features = [c for c in [
@@ -683,13 +692,18 @@ def _apply_optuna_params(models: dict, best_params: dict,
     return updated
 
 
-def _build_models(n_classes: int, is_ph: bool = False) -> dict:
-    """Return {name: model} for XGBoost, Random Forest, and SVM.
+def _build_models(n_classes: int, is_ph: bool = False,
+                  class_weight: bool = True) -> dict:
+    """Return {name: model} for XGBoost, Random Forest, SVM, and FCNN.
 
     For pH (``is_ph=True``) XGBoost uses an ordinal regression objective
     (``reg:squarederror`` with rounded predictions) rather than unordered
     multiclass softmax, which better respects the 11-step CPR scale.
     For N/P/K (3 ordered classes) multiclass softmax is used as before.
+
+    ``class_weight=True`` enables balanced class weighting for RF and SVM.
+    XGBoost and FCNN weighting is handled in the training loop via
+    sample_weight and oversampling respectively.
     """
     _xgb_shared = dict(
         max_depth=6, min_child_weight=3, n_estimators=500, learning_rate=0.03,
@@ -703,16 +717,17 @@ def _build_models(n_classes: int, is_ph: bool = False) -> dict:
             objective="multi:softprob", num_class=n_classes,
             eval_metric="mlogloss", **_xgb_shared,
         )
+    cw = "balanced" if class_weight else None
     return {
         "XGBoost": xgb_model,
         "RandomForest": RandomForestClassifier(
             n_estimators=500, max_depth=None, min_samples_leaf=2,
-            max_features="sqrt", class_weight="balanced",
+            max_features="sqrt", class_weight=cw,
             random_state=42, n_jobs=-1,
         ),
         "SVM": SVC(
             kernel="rbf", C=10, gamma="scale",
-            class_weight="balanced", decision_function_shape="ovr",
+            class_weight=cw, decision_function_shape="ovr",
             random_state=42,
         ),
         "FCNN": MLPClassifier(
@@ -730,8 +745,26 @@ def _build_models(n_classes: int, is_ph: bool = False) -> dict:
     }
 
 
+def _oversample_minority(X, y, random_state=42):
+    """Duplicate minority-class rows until all classes match the majority count."""
+    rng = np.random.default_rng(random_state)
+    classes, counts = np.unique(y, return_counts=True)
+    max_count = counts.max()
+    X_parts, y_parts = [X], [np.array(y)]
+    for cls, cnt in zip(classes, counts):
+        deficit = max_count - cnt
+        if deficit == 0:
+            continue
+        idx = np.where(np.array(y) == cls)[0]
+        chosen = rng.choice(idx, size=deficit, replace=True)
+        X_parts.append(X[chosen])
+        y_parts.append(np.full(deficit, cls, dtype=int))
+    order = rng.permutation(sum(len(p) for p in y_parts))
+    return np.vstack(X_parts)[order], np.concatenate(y_parts)[order]
+
+
 def _run_one_model(model, model_name, X_valid, y_valid, groups_valid,
-                   preprocessor, gkf, use_smote=False):
+                   preprocessor, gkf, use_smote=False, class_weight=True):
     """Run GroupKFold for one model.
 
     Returns (y_true, y_pred, fold_metrics_dict, last_Xte, last_yte).
@@ -760,13 +793,20 @@ def _run_one_model(model, model_name, X_valid, y_valid, groups_valid,
             # Skip this fold — it provides no discriminative signal anyway.
             continue
 
-        sw = compute_sample_weight("balanced", ytr)
-
-        if model_name in ("SVM", "FCNN"):
-            # SVM and sklearn MLP do not support sample_weight
-            model.fit(Xtr, ytr)
+        if class_weight:
+            sw = compute_sample_weight("balanced", ytr)
+            if model_name == "FCNN":
+                # MLPClassifier supports neither class_weight nor sample_weight;
+                # oversample minority classes to achieve the same effect.
+                Xtr, ytr = _oversample_minority(Xtr, ytr)
+                model.fit(Xtr, ytr)
+            elif model_name == "SVM":
+                # SVC handles class_weight via constructor; no sample_weight in fit.
+                model.fit(Xtr, ytr)
+            else:
+                model.fit(Xtr, ytr, sample_weight=sw)
         else:
-            model.fit(Xtr, ytr, sample_weight=sw)
+            model.fit(Xtr, ytr)
 
         yp = np.array(model.predict(Xte))
         if yp.ndim == 2:   # multi:softprob returns (n, n_classes) in some XGB versions
@@ -896,7 +936,9 @@ def plot_model_comparison(results_by_model, target_col, figures_dir):
 
 def train_and_evaluate(df, X, groups, target_col, preprocessor,
                        num_features, cat_features, figures_dir="outputs/figures",
-                       use_smote=False, min_groups_for_spatial_cv=4,
+                       use_smote=False, class_weight=True,
+                       random_kfold=False,
+                       min_groups_for_spatial_cv=4,
                        use_optuna=False, optuna_trials=50):
     """
     Train XGBoost, Random Forest, and SVM with GroupKFold (or StratifiedKFold fallback).
@@ -938,11 +980,14 @@ def train_and_evaluate(df, X, groups, target_col, preprocessor,
     groups_valid = groups[valid_idx]
 
     n_groups = groups_valid.nunique()
-    if n_groups < min_groups_for_spatial_cv:
+    if random_kfold:
+        print(f"  CV: 5-fold StratifiedKFold (random, ignoring spatial groups).")
+        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        splitter = lambda X, y, g: cv.split(X, y)
+    elif n_groups < min_groups_for_spatial_cv:
         print(f"  Note: only {n_groups} spatial group(s) — falling back to "
               f"5-fold StratifiedKFold (too few groups for meaningful GroupKFold).")
         cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-        # StratifiedKFold.split does not use groups
         splitter = lambda X, y, g: cv.split(X, y)
     else:
         n_splits = min(5, n_groups)
@@ -952,7 +997,7 @@ def train_and_evaluate(df, X, groups, target_col, preprocessor,
         splitter = lambda X, y, g: cv.split(X, y, groups=g)
     gkf = splitter  # passed into _run_one_model as the split callable
 
-    models           = _build_models(n_classes, is_ph=is_ph)
+    models           = _build_models(n_classes, is_ph=is_ph, class_weight=class_weight)
 
     if use_optuna:
         print(f"\n  Running Optuna hyperparameter search ({optuna_trials} trials per model)...")
@@ -978,7 +1023,7 @@ def train_and_evaluate(df, X, groups, target_col, preprocessor,
         print(f"\n  Training {model_name}...")
         y_true, y_pred, folds, last_Xte, last_yte = _run_one_model(
             model, model_name, X_valid, y_valid, groups_valid, preprocessor, gkf,
-            use_smote=use_smote)
+            use_smote=use_smote, class_weight=class_weight)
         metrics_dict, cm = _print_one_model(
             model_name, y_true, y_pred, folds,
             n_classes, class_names, is_ph,
@@ -1013,10 +1058,10 @@ def train_and_evaluate(df, X, groups, target_col, preprocessor,
     return best_model, best_model_name, list(results_by_model.values()), importances_by_model
 
 
-def save_summary_table(results, out_dir="outputs"):
+def save_summary_table(results, out_dir="outputs", filename="metrics_summary.csv"):
     """Save CSV with all models × all targets — paste directly into paper."""
     os.makedirs(out_dir, exist_ok=True)
-    path = os.path.join(out_dir, "metrics_summary.csv")
+    path = os.path.join(out_dir, filename)
     pd.DataFrame(results).to_csv(path, index=False)
     print(f"\nSummary table saved: {path}")
 
@@ -1036,11 +1081,14 @@ def save_best_model(best_model, best_model_name, preprocessor,
     os.makedirs(models_dir, exist_ok=True)
 
     model_clone = clone(best_model)
-    sw = compute_sample_weight("balanced", y_valid)
     Xp = preprocessor.fit_transform(X_valid)
-    if best_model_name in ("SVM", "FCNN"):
+    if best_model_name == "FCNN":
+        Xp_fit, y_fit = _oversample_minority(Xp, y_valid.values)
+        model_clone.fit(Xp_fit, y_fit)
+    elif best_model_name == "SVM":
         model_clone.fit(Xp, y_valid)
     else:
+        sw = compute_sample_weight("balanced", y_valid)
         model_clone.fit(Xp, y_valid, sample_weight=sw)
 
     pipeline = Pipeline([
@@ -1469,6 +1517,12 @@ if __name__ == "__main__":
     parser.add_argument("--smote", action="store_true",
                         help="Apply SMOTE oversampling on minority classes per fold "
                              "(requires: pip install imbalanced-learn).")
+    parser.add_argument("--class-weight", action="store_true", default=True,
+                        help="Enable balanced class weighting for all models (default: on). "
+                             "XGBoost/RF use sample_weight; SVM uses class_weight param; "
+                             "FCNN uses minority-class oversampling.")
+    parser.add_argument("--no-class-weight", dest="class_weight", action="store_false",
+                        help="Disable class weighting (useful for ablation).")
     parser.add_argument("--min-groups-spatial-cv", type=int, default=4, metavar="N",
                         help="Minimum unique spatial groups required to use GroupKFold. "
                              "Falls back to StratifiedKFold when below this threshold (default: 4).")
@@ -1496,6 +1550,14 @@ if __name__ == "__main__":
     parser.add_argument("--pca", type=int, default=None, metavar="N",
                         help="Reduce numeric features to N principal components before training "
                              "(e.g. --pca 30). Helps when features >> samples.")
+    parser.add_argument("--random-kfold", action="store_true",
+                        help="Use 5-fold StratifiedKFold (random) instead of spatial GroupKFold. "
+                             "Inflates metrics vs. true spatial holdout — for comparison only. "
+                             "Results saved to metrics_summary_rkf.csv.")
+    parser.add_argument("--midpoint-regression", action="store_true",
+                        help="Map ordinal N/P/K classes to BSWM threshold midpoints "
+                             "(e.g. Low P → 5.5 mg/kg) before regression. "
+                             "Requires --regression. pH uses actual CPR scale values.")
     args = parser.parse_args()
 
     if not os.path.isfile(args.data_path):
@@ -1520,6 +1582,17 @@ if __name__ == "__main__":
     preprocessor = build_pipeline(num_feat, cat_feat, n_pca=args.pca)
     if args.pca:
         print(f"PCA enabled: reducing numeric features to {args.pca} components")
+    if args.class_weight:
+        print("Class weighting: ON  (RF/SVM: balanced; XGBoost: sample_weight; FCNN: oversampling)")
+    else:
+        print("Class weighting: OFF")
+    if args.random_kfold:
+        print("CV mode: StratifiedKFold (random) — results saved to metrics_summary_rkf.csv")
+    if getattr(args, "midpoint_regression", False) and args.regression:
+        print("Midpoint regression: mapping N/P/K ordinal classes to BSWM concentration midpoints")
+        for col, mapping in NUTRIENT_MIDPOINTS.items():
+            if col in df.columns:
+                df[col] = df[col].map(mapping)
 
     all_results       = []
     all_importances   = {}   # (target, model) -> (feat_names, imps)
@@ -1539,6 +1612,8 @@ if __name__ == "__main__":
                 df, X, groups, t, preprocessor,
                 num_feat, cat_feat, figures_dir=args.figures_dir,
                 use_smote=args.smote,
+                class_weight=args.class_weight,
+                random_kfold=args.random_kfold,
                 min_groups_for_spatial_cv=args.min_groups_spatial_cv,
                 use_optuna=args.tune,
                 optuna_trials=args.optuna_trials,
@@ -1569,7 +1644,8 @@ if __name__ == "__main__":
                 )
 
     if all_results:
-        save_summary_table(all_results, out_dir=args.output_dir)
+        summary_file = "metrics_summary_rkf.csv" if args.random_kfold else "metrics_summary.csv"
+        save_summary_table(all_results, out_dir=args.output_dir, filename=summary_file)
 
     # Save importances as CSV so plot_pubmat can load them without re-training
     if all_importances:
