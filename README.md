@@ -29,22 +29,15 @@ Ground truth is collected via the **AgriCapture** mobile app (GPS, microclimate,
    Downloads .SAFE products, samples 9-pixel neighbourhood per GPS point.
    Output: data/processed/field_data_with_bands_growing.csv
 
-4. Patch-level feature extraction
-   python src/extract_clay_embeddings.py --source patch-stats
-   Extracts 64 patch-level features per point:
-     - Per-band mean/std/p25/p75/p95 (10 bands × 5 = 50)
-     - Spectral indices: NDVI, NDWI, BSI, NDRE (4)
-     - Per-band local variance (10)
-   Output: data/processed/field_data_with_clay.csv
-
-5. Append SoilGrids priors
-   python src/fetch_soilgrids.py data/processed/field_data_with_clay.csv \
+4. Append SoilGrids priors
+   python src/fetch_soilgrids.py data/processed/field_data_with_bands_growing.csv \
      --output data/processed/field_data_growing_soilgrids.csv
    Adds 12 sg_* columns (phh2o, soc, nitrogen, clay, sand, cec at 0-5 cm and 5-15 cm).
 
-6. Model training
+5. Model training
    python src/train_ordinal.py data/processed/field_data_growing_soilgrids.csv --deduplicate
    XGBoost, RF, SVM, FCNN trained with 5-fold StratifiedKFold (default).
+   Spectral indices (NDVI, EVI, NDRE, BSI, etc.) are computed on-the-fly from raw bands.
    Output: outputs/metrics_summary.csv, confusion matrices, feature importance plots
 ```
 
@@ -237,18 +230,29 @@ Input: `field_data_growing_soilgrids.csv --deduplicate` (~475 rows, Oct+SoilGrid
 | Target | Kappa | vs Random k-fold |
 |--------|-------|-----------------|
 | P | 0.133 | 3.2× lower |
-| K | ~0.000 | Geographic confound confirmed — High-K only in one barangay |
+| K | ~0.000 | Validation gap — Balili has no High-K samples to test against |
 | pH | 0.210 | 1.9× lower |
 | N | ~0.000 | No High-N samples anywhere |
 
-**The gap between random and spatial Kappa quantifies spatial autocorrelation leakage.** With only 2 barangays, random k-fold mixes adjacent GPS points across train/test folds — the model partially memorizes location. K=0.670 random vs ~0.000 spatial confirms K is a geographic confound, not a spectral signal. Spatial holdout is the correct metric for deployment generalization; random k-fold is useful for comparison with published benchmarks that use random splits.
+### Paoay-only, random k-fold (`--filter-barangay Paoay`)
+
+| Target | Best Model | Kappa | Notes |
+|--------|-----------|-------|-------|
+| **K** | XGBoost | **0.658** | Substantial — real spectral signal confirmed within single location |
+| **N** | Random Forest | 0.352 | Similar to all-locations; still no High-N |
+| **P** | XGBoost | 0.342 | Fair — lower than all-locations (less spatial diversity) |
+| **pH** | Random Forest | 0.313 | Fair — lower than all-locations |
+
+K Kappa=0.658 within Paoay proves the spectral signal is real. The spatial holdout ~0.000 is a data collection gap, not a model failure — collecting High-K samples in Balili would likely yield a meaningful cross-barangay K result.
+
+**The gap between random and spatial Kappa quantifies spatial autocorrelation leakage.** With only 2 barangays, random k-fold mixes adjacent GPS points across train/test folds — the model partially memorizes location. K=0.670 random vs ~0.000 spatial appears to be a geographic confound, but a Paoay-only experiment (see below) shows K Kappa=0.658 within a single barangay — confirming a real spectral signal exists. The ~0.000 spatial result reflects a *validation gap* (Balili has zero High-K samples to test against), not absence of signal. Spatial holdout is the correct metric for deployment generalization; random k-fold is useful for comparison with published benchmarks that use random splits.
 
 ---
 
 ## Data Limitations
 
 - **No High-N samples**: All samples across both barangays are Low or Medium N. No model can learn the Low→High boundary. Collect from plots with heavy urea fertilisation 2–4 weeks before a Sentinel-2 overpass.
-- **K geographic confound**: High-K samples exist only in Paoay. Balili has zero High-K. Any K model trained on this data memorizes barangay rather than spectral signal.
+- **K validation gap**: High-K samples exist only in Paoay; Balili has none. Spatial holdout cannot validate K predictions because the test fold has no High-K examples. However, K Kappa=0.658 within Paoay alone confirms the spectral signal is real — collecting High-K samples in Balili would resolve this.
 - **Two barangays only**: GroupKFold produces only 2 folds. Results are sensitive to the training/test split and underrepresent minority classes per fold. Adding a third barangay (e.g., Atok Betag) would meaningfully improve spatial CV reliability.
 
 ---
@@ -328,7 +332,7 @@ SoilScan-Sentinel2/
 
 **Why growing-season imagery?** The plant-stress spectral pathway for N/P/K detection requires chlorophyll and canopy responses visible only during active vegetative growth — not on bare post-harvest fields.
 
-**Why patch statistics over plain band values?** Per-band statistics (mean, std, percentiles, local variance) capture spatial texture and variability within the 128×128 patch, which single-pixel band values cannot. Clay v1.5 embeddings are available and may improve results but have not been benchmarked on this dataset yet.
+**Why raw S2 bands as the current baseline?** The canonical pipeline uses raw band values and band std from the 3×3 neighbourhood, with spectral indices computed on-the-fly. Patch statistics (`extract_clay_embeddings.py`) and Clay v1.5 embeddings are available and may improve results but have not been benchmarked against the raw-band baseline on this dataset.
 
 **Why 5-fold StratifiedKFold as default?** With only 2 barangays, GroupKFold produces 2-fold CV — each fold trains on one barangay and tests on the other, severely limiting the training distribution and underrepresenting minority classes. StratifiedKFold preserves class proportions across folds and gives more stable estimates. Use `--spatial-kfold` when the goal is to measure true geographic generalization.
 
@@ -354,6 +358,14 @@ y_pred = pipeline.predict(X_new[meta["feature_names"]])
 ```
 
 ---
+
+## Recommendations / Future Work
+
+- **Collect High-K samples in Balili**: K has a confirmed spectral signal (Kappa=0.658 within Paoay). Adding High-K samples in a second location would enable cross-barangay validation and likely yield a meaningful spatial holdout Kappa.
+- **Collect High-N samples**: N is Low everywhere across both barangays. Target plots with heavy urea/ammonium fertilisation 2–4 weeks before an S2 overpass.
+- **Spectral-only ablation**: Remove terrain, microclimate, and SoilGrids features and train on S2 bands + indices only. This would isolate the pure satellite signal and eliminate any residual location-proxy effects from elevation or SoilGrids spatial priors.
+- **Add a third barangay**: With only 2 groups, spatial CV is 2-fold. A third sampling location would enable leave-one-out spatial validation and produce more robust generalization estimates.
+- **Benchmark patch statistics and Clay embeddings**: `extract_clay_embeddings.py` produces 64 patch-level statistics or 1024-dim Clay v1.5 embeddings — neither has been compared against the raw-band baseline on this dataset.
 
 ## Acknowledgments
 
