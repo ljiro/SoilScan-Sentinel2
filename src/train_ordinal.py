@@ -289,7 +289,7 @@ def balance_locations(df: pd.DataFrame, targets: list[str]) -> pd.DataFrame:
 
 
 def load_and_prepare_data(csv_path, deduplicate=False, balance_locs=False,
-                          spectral_only=False):
+                          spectral_only=False, demean_barangay=False):
     """Load unified dataset, engineer spectral indices, prepare features and targets."""
     df = pd.read_csv(csv_path, on_bad_lines="skip")
 
@@ -360,6 +360,16 @@ def load_and_prepare_data(csv_path, deduplicate=False, balance_locs=False,
     all_numeric = (spectral_features + spectral_std_features + microclimate_features
                    + terrain_features + emit_features + clay_features + resnet_features
                    + patch_features + s1_features + soilgrids_features + index_features)
+
+    if demean_barangay:
+        location_col = next((c for c in ["barangay", "municipality"] if c in df.columns), None)
+        if location_col:
+            present = [c for c in all_numeric if c in df.columns]
+            df[present] = df[present] - df.groupby(location_col)[present].transform("mean")
+            print(f"  Location demeaning: subtracted per-{location_col} means from {len(present)} features.")
+        else:
+            print("  Warning: --demean-barangay requested but no barangay/municipality column found.")
+
     X = df[all_numeric + categorical_features]
 
     # Group by location to prevent spatial leakage.
@@ -1558,6 +1568,10 @@ if __name__ == "__main__":
     parser.add_argument("--spectral-only", action="store_true",
                         help="Use only S2 spectral bands, spectral indices, and SoilGrids priors. "
                              "Excludes terrain, microclimate, and crop-type features.")
+    parser.add_argument("--demean-barangay", action="store_true",
+                        help="Subtract per-barangay feature means before training. "
+                             "Removes between-location offsets so the model learns "
+                             "within-location variation only, reducing geographic memorization.")
     parser.add_argument("--random-kfold", action="store_true", default=True,
                         help="Use 5-fold StratifiedKFold (random) — default. "
                              "Results saved to metrics_summary.csv.")
@@ -1579,6 +1593,7 @@ if __name__ == "__main__":
         args.data_path, deduplicate=args.deduplicate,
         balance_locs=args.balance_locations,
         spectral_only=args.spectral_only,
+        demean_barangay=args.demean_barangay,
     )
 
     if args.filter_barangay:
