@@ -396,12 +396,10 @@ def build_pipeline(num_features, cat_features, n_pca: int | None = None):
     if n_pca is not None:
         num_steps.append(("pca", PCA(n_components=n_pca, random_state=42)))
     num_pipe = Pipeline(num_steps)
-    preprocessor = ColumnTransformer(
-        transformers=[
-            ("num", num_pipe, num_features),
-            ("cat", OneHotEncoder(handle_unknown="ignore"), cat_features),
-        ]
-    )
+    transformers = [("num", num_pipe, num_features)]
+    if cat_features:
+        transformers.append(("cat", OneHotEncoder(handle_unknown="ignore"), cat_features))
+    preprocessor = ColumnTransformer(transformers=transformers)
     return preprocessor
 
 
@@ -424,8 +422,11 @@ def get_feature_names(preprocessor, num_features, cat_features):
         num_names = [f"PC{i+1}" for i in range(n_comp)]
     else:
         num_names = num_features
-    ohe = preprocessor.named_transformers_["cat"]
-    cat_names = list(ohe.get_feature_names_out(cat_features))
+    if cat_features:
+        ohe = preprocessor.named_transformers_["cat"]
+        cat_names = list(ohe.get_feature_names_out(cat_features))
+    else:
+        cat_names = []
     return num_names + cat_names
 
 
@@ -1545,10 +1546,12 @@ if __name__ == "__main__":
                         help="Train regressors (XGBoost, RF, SVR, MLP) on the raw ordinal "
                              "targets instead of classifiers. Reports RMSE, MAE, R2, Spearman "
                              "rho, and rounded-to-class Kappa for comparison.")
-    parser.add_argument("--save-models", action="store_true",
+    parser.add_argument("--save-models", action="store_true", default=True,
                         help="Retrain the best model per target on all available data and save "
-                             "as a joblib Pipeline to outputs/models/. "
+                             "as a joblib Pipeline to outputs/models/ (default: on). "
                              "Also writes a sidecar _meta.json with feature names and class labels.")
+    parser.add_argument("--no-save-models", dest="save_models", action="store_false",
+                        help="Skip model export.")
     parser.add_argument("--pca", type=int, default=None, metavar="N",
                         help="Reduce numeric features to N principal components before training "
                              "(e.g. --pca 30). Helps when features >> samples.")
