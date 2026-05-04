@@ -288,7 +288,8 @@ def balance_locations(df: pd.DataFrame, targets: list[str]) -> pd.DataFrame:
     return df_bal
 
 
-def load_and_prepare_data(csv_path, deduplicate=False, balance_locs=False):
+def load_and_prepare_data(csv_path, deduplicate=False, balance_locs=False,
+                          spectral_only=False):
     """Load unified dataset, engineer spectral indices, prepare features and targets."""
     df = pd.read_csv(csv_path, on_bad_lines="skip")
 
@@ -321,8 +322,8 @@ def load_and_prepare_data(csv_path, deduplicate=False, balance_locs=False):
     # Temporal std features — present when multi-tile compositing was used
     spectral_std_features = [f"{b}_std" for b in _S2_BANDS
                              if f"{b}_std" in df.columns]
-    microclimate_features = ["temperature_c", "humidity_percent", "altitude_m"]
-    terrain_features = [c for c in [
+    microclimate_features = [] if spectral_only else ["temperature_c", "humidity_percent", "altitude_m"]
+    terrain_features = [] if spectral_only else [c for c in [
         "elevation_m", "slope_deg", "aspect_deg",
         "twi", "curvature", "northness", "eastness",
     ] if c in df.columns]
@@ -342,7 +343,7 @@ def load_and_prepare_data(csv_path, deduplicate=False, balance_locs=False):
         print(f"   Sentinel-1 backscatter detected: {len(s1_features)} features")
     if soilgrids_features:
         print(f"   SoilGrids features detected: {len(soilgrids_features)} features")
-    categorical_features  = ["crops"]
+    categorical_features  = [] if spectral_only else ["crops"]
 
     # Compute and attach spectral indices (only when raw S2 bands are present)
     if all(b in df.columns for b in ["B04", "B08"]):
@@ -1551,6 +1552,9 @@ if __name__ == "__main__":
     parser.add_argument("--pca", type=int, default=None, metavar="N",
                         help="Reduce numeric features to N principal components before training "
                              "(e.g. --pca 30). Helps when features >> samples.")
+    parser.add_argument("--spectral-only", action="store_true",
+                        help="Use only S2 spectral bands, spectral indices, and SoilGrids priors. "
+                             "Excludes terrain, microclimate, and crop-type features.")
     parser.add_argument("--random-kfold", action="store_true", default=True,
                         help="Use 5-fold StratifiedKFold (random) — default. "
                              "Results saved to metrics_summary.csv.")
@@ -1571,6 +1575,7 @@ if __name__ == "__main__":
     df, X, groups, targets, num_feat, cat_feat = load_and_prepare_data(
         args.data_path, deduplicate=args.deduplicate,
         balance_locs=args.balance_locations,
+        spectral_only=args.spectral_only,
     )
 
     if args.filter_barangay:
@@ -1586,6 +1591,8 @@ if __name__ == "__main__":
     preprocessor = build_pipeline(num_feat, cat_feat, n_pca=args.pca)
     if args.pca:
         print(f"PCA enabled: reducing numeric features to {args.pca} components")
+    if args.spectral_only:
+        print("Feature mode: SPECTRAL ONLY (S2 bands + indices + SoilGrids; terrain/microclimate/crops excluded)")
     if args.class_weight:
         print("Class weighting: ON  (RF/SVM: balanced; XGBoost: sample_weight; FCNN: oversampling)")
     else:
