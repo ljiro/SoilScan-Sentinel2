@@ -204,7 +204,7 @@ Four classifier families trained per target (N, P, K, pH):
 | **XGBoost** | Gradient-boosted trees; `sample_weight` for class balance |
 | **Random Forest** | Ensemble; `compute_sample_weight` for class balance |
 | **SVM** | RBF kernel with `StandardScaler`; `class_weight="balanced"` |
-| **FCNN** | 3-layer MLP (256→128→64) with BatchNorm and Dropout; minority oversampling |
+| **FCNN** | 3-layer MLP (128→64→32), ReLU, L2 regularisation, early stopping; minority oversampling for class balance |
 
 **Primary metric: Cohen's Kappa** — corrects for chance agreement. Interpretation: 0.01–0.20 Slight, 0.21–0.40 Fair, 0.41–0.60 Moderate, 0.61–0.80 Substantial.
 

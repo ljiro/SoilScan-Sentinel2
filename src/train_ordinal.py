@@ -1236,15 +1236,6 @@ def print_data_collection_guidance(df: pd.DataFrame, output_dir: str = "outputs"
 # Regression mode
 # ---------------------------------------------------------------------------
 
-# For N/P/K the regression target is the ordinal integer (0/1/2).
-# For pH the raw float pH values from the field CSV are used (4.0-7.6).
-# These midpoints are used to convert ordinal predictions back to mg/kg.
-ORDINAL_MIDPOINTS = {
-    "n":  [5.5,  15.5, 25.5],   # Low / Medium / High mid-class
-    "p":  [5.5,  18.0, 37.5],
-    "k":  [39.0, 117.0, 195.0],
-}
-
 
 def _build_regression_models() -> dict:
     """Return {name: regressor} for the regression pipeline."""
@@ -1505,8 +1496,8 @@ def train_and_evaluate_regression(df, X, groups, target_col, preprocessor,
                     preprocessor, num_features, cat_features,
                     f"{target_col}_reg", figures_dir,
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"  Warning: feature importance failed for {model_name}: {e}")
 
     if results:
         best = max(results, key=lambda n: results[n]["spearman_rho"])
@@ -1677,6 +1668,22 @@ if __name__ == "__main__":
     if all_results:
         summary_file = "metrics_summary.csv" if args.random_kfold else "metrics_summary_spatial.csv"
         save_summary_table(all_results, out_dir=args.output_dir, filename=summary_file)
+
+        # Print end-of-run summary
+        df_res = pd.DataFrame(all_results)
+        print("\n" + "=" * 60)
+        print("  FINAL SUMMARY")
+        print("=" * 60)
+        print(f"  {'Target':<8} {'Best Model':<16} {'Kappa':>8}  {'OA':>6}  {'MacroF1':>8}")
+        print(f"  {'-'*8} {'-'*16} {'-'*8}  {'-'*6}  {'-'*8}")
+        for tgt in df_res["target"].unique():
+            sub = df_res[df_res["target"] == tgt]
+            best = sub.loc[sub["kappa"].idxmax()]
+            print(f"  {tgt.upper():<8} {best['model']:<16} "
+                  f"{best['kappa']:>8.3f}  "
+                  f"{best['oa']:>6.3f}  "
+                  f"{best['macro_f1']:>8.3f}")
+        print("=" * 60)
 
     # Save importances as CSV so plot_pubmat can load them without re-training
     if all_importances:
