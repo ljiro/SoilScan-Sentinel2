@@ -31,13 +31,15 @@ from sklearn.metrics import (
 from sklearn.inspection import permutation_importance
 from sklearn.model_selection import GroupKFold, StratifiedKFold
 from sklearn.neural_network import MLPClassifier, MLPRegressor
-from sklearn.pipeline import Pipeline
+from sklearn.base import clone
 from sklearn.decomposition import PCA
+from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.svm import SVC, SVR
 from sklearn.utils.class_weight import compute_sample_weight
 
 CLASS_NAMES = ["Low", "Medium", "High"]
+CLASS_LABELS = dict(enumerate(CLASS_NAMES))  # {0: "Low", 1: "Medium", 2: "High"}
 
 # Philippine Bureau of Soils and Water Management STK thresholds
 # used to label each ordinal class with its actual concentration range.
@@ -99,6 +101,19 @@ PH_VALUES = [4.0, 4.4, 4.8, 5.2, 5.4, 5.8, 6.0, 6.4, 6.8, 7.2, 7.6]
 
 # Small epsilon to avoid division by zero in index calculations
 _EPS = 1e-6
+
+
+def _find_location_col(df):
+    """Return the first of 'barangay' or 'municipality' present in df, or None."""
+    return next((c for c in ["barangay", "municipality"] if c in df.columns), None)
+
+
+def _kappa_label(kappa):
+    if kappa < 0.20: return "Slight"
+    if kappa < 0.40: return "Fair"
+    if kappa < 0.60: return "Moderate"
+    if kappa < 0.80: return "Substantial"
+    return "Almost Perfect"
 
 
 class _OrdinalXGBWrapper:
@@ -224,15 +239,13 @@ def balance_locations(df: pd.DataFrame, targets: list[str]) -> pd.DataFrame:
 
     A small class (< 10 samples per location after capping) is also warned about.
     """
-    location_col = next((c for c in ["barangay", "municipality"] if c in df.columns), None)
+    location_col = _find_location_col(df)
     if not location_col:
         print("   WARNING: No barangay/municipality column — skipping location balancing.")
         return df
 
     before = len(df)
-    keep_idx = set(df.index)   # start with all rows
-
-    CLASS_LABELS = {0: "Low", 1: "Medium", 2: "High"}
+    keep_idx = set(df.index)
 
     for target in targets:
         if target not in df.columns:
@@ -319,7 +332,6 @@ def load_and_prepare_data(csv_path, deduplicate=False, balance_locs=False,
     _S2_BANDS = ["B01", "B02", "B03", "B04", "B05", "B06",
                  "B07", "B08", "B8A", "B09", "B11", "B12"]
     spectral_features = [b for b in _S2_BANDS if b in df.columns]
-    # Temporal std features — present when multi-tile compositing was used
     spectral_std_features = [f"{b}_std" for b in _S2_BANDS
                              if f"{b}_std" in df.columns]
     microclimate_features = [] if spectral_only else ["temperature_c", "humidity_percent", "altitude_m"]
@@ -345,7 +357,6 @@ def load_and_prepare_data(csv_path, deduplicate=False, balance_locs=False,
         print(f"   SoilGrids features detected: {len(soilgrids_features)} features")
     categorical_features  = [] if spectral_only else ["crops"]
 
-    # Compute and attach spectral indices (only when raw S2 bands are present)
     if all(b in df.columns for b in ["B04", "B08"]):
         idx_df = _add_spectral_indices(df)
         index_features = idx_df.columns.tolist()
@@ -362,7 +373,7 @@ def load_and_prepare_data(csv_path, deduplicate=False, balance_locs=False,
                    + patch_features + s1_features + soilgrids_features + index_features)
 
     if demean_barangay:
-        location_col = next((c for c in ["barangay", "municipality"] if c in df.columns), None)
+        location_col = _find_location_col(df)
         if location_col:
             present = [c for c in all_numeric if c in df.columns]
             df[present] = df[present] - df.groupby(location_col)[present].transform("mean")
@@ -860,9 +871,7 @@ def _print_one_model(model_name, y_true, y_pred, folds,
     labels  = list(range(n_classes))
     cm      = confusion_matrix(y_true, y_pred, labels=labels)
 
-    kappa_lbl = ("Slight" if kappa < 0.20 else "Fair" if kappa < 0.40
-                 else "Moderate" if kappa < 0.60 else "Substantial"
-                 if kappa < 0.80 else "Almost Perfect")
+    kappa_lbl = _kappa_label(kappa)
 
     print(f"\n  -- {model_name} --")
     print(f"  {'Metric':<16} {'Mean':>7}  {'Std':>7}  {'95% CI':>12}")
@@ -1008,13 +1017,11 @@ def train_and_evaluate(df, X, groups, target_col, preprocessor,
             print(f"  Note: {n_groups} unique groups — using {n_splits}-fold GroupKFold.")
         cv = GroupKFold(n_splits=n_splits)
         splitter = lambda X, y, g: cv.split(X, y, groups=g)
-    gkf = splitter  # passed into _run_one_model as the split callable
 
     models           = _build_models(n_classes, is_ph=is_ph, class_weight=class_weight)
 
     if use_optuna:
         print(f"\n  Running Optuna hyperparameter search ({optuna_trials} trials per model)...")
-        # Use a 80/20 split of the training data for Optuna validation
         from sklearn.model_selection import train_test_split
         Xnp  = preprocessor.fit_transform(X_valid)
         X_ot, X_ov, y_ot, y_ov = train_test_split(
@@ -1035,7 +1042,7 @@ def train_and_evaluate(df, X, groups, target_col, preprocessor,
     for model_name, model in models.items():
         print(f"\n  Training {model_name}...")
         y_true, y_pred, folds, last_Xte, last_yte = _run_one_model(
-            model, model_name, X_valid, y_valid, groups_valid, preprocessor, gkf,
+            model, model_name, X_valid, y_valid, groups_valid, preprocessor, splitter,
             use_smote=use_smote, class_weight=class_weight)
         metrics_dict, cm = _print_one_model(
             model_name, y_true, y_pred, folds,
@@ -1088,9 +1095,6 @@ def save_best_model(best_model, best_model_name, preprocessor,
       outputs/models/{target}_{model_name}.joblib  — sklearn Pipeline (preprocessor + model)
       outputs/models/{target}_{model_name}_meta.json — feature names, class labels, model type
     """
-    from sklearn.pipeline import Pipeline
-    from sklearn.base import clone
-
     os.makedirs(models_dir, exist_ok=True)
 
     model_clone = clone(best_model)
@@ -1137,9 +1141,8 @@ def print_data_collection_guidance(df: pd.DataFrame, output_dir: str = "outputs"
     are absent or severely under-represented at each barangay, and prints
     concrete collection targets (how many new samples are needed to balance).
     """
-    CLASS_LABELS = {0: "Low", 1: "Medium", 2: "High"}
     npk_targets  = [t for t in ["n", "p", "k"] if t in df.columns]
-    location_col = next((c for c in ["barangay", "municipality"] if c in df.columns), None)
+    location_col = _find_location_col(df)
 
     if not location_col:
         print("  WARNING: No barangay/municipality column found — skipping guidance.")
@@ -1353,9 +1356,7 @@ def _print_one_regression_model(model_name, y_true, y_pred, folds,
 
     kappa = cohen_kappa_score(y_true_cls, y_pred_cls) if len(np.unique(y_true_cls)) > 1 else 0.0
     oa    = accuracy_score(y_true_cls, y_pred_cls)
-    kappa_lbl = ("Slight" if kappa < 0.20 else "Fair" if kappa < 0.40
-                 else "Moderate" if kappa < 0.60 else "Substantial"
-                 if kappa < 0.80 else "Almost Perfect")
+    kappa_lbl = _kappa_label(kappa)
 
     print(f"\n  -- {model_name} --")
     print(f"  {'Metric':<16} {'Mean':>7}  {'Std':>7}  {'95% CI':>12}")
@@ -1450,11 +1451,7 @@ def train_and_evaluate_regression(df, X, groups, target_col, preprocessor,
     X_valid      = X[valid_idx]
     groups_valid = groups[valid_idx]
 
-    # For pH: use raw float values from the CSV, not the integer index
-    if is_ph:
-        y_valid = df.loc[valid_idx, target_col].astype(float)
-    else:
-        y_valid = df.loc[valid_idx, target_col].astype(float)
+    y_valid = df.loc[valid_idx, target_col].astype(float)
 
     n_groups = groups_valid.nunique()
     if n_groups < min_groups_for_spatial_cv:
@@ -1588,7 +1585,7 @@ if __name__ == "__main__":
     )
 
     if args.filter_barangay:
-        loc_col = next((c for c in ["barangay", "municipality"] if c in df.columns), None)
+        loc_col = _find_location_col(df)
         if loc_col:
             before = len(df)
             mask = df[loc_col].str.lower() == args.filter_barangay.lower()
