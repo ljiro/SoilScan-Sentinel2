@@ -33,6 +33,8 @@ import pandas as pd
 import requests
 from dotenv import load_dotenv
 import rasterio
+from rasterio.warp import transform as rio_transform
+from rasterio.windows import Window
 
 from data_fetcher_copernicus import (
     CATALOG_URL,
@@ -207,8 +209,6 @@ def _sample_ndvi_s3(s3, product_name: str, lon: float, lat: float,
         try:
             with rasterio.Env(**gdal_env):
                 with rasterio.open(vsi) as src:
-                    from rasterio.warp import transform as rio_transform
-                    from rasterio.windows import Window
                     xs, ys = rio_transform("EPSG:4326", src.crs, [lon], [lat])
                     row, col = src.index(xs[0], ys[0])
                     win = Window(max(0, col - 1), max(0, row - 1), 3, 3)

@@ -32,6 +32,7 @@ import rasterio
 import requests
 from dotenv import load_dotenv
 from rasterio.warp import transform as rio_transform
+from rasterio.windows import Window
 
 from data_fetcher_copernicus import (
     CATALOG_URL,
@@ -124,7 +125,6 @@ def sample_s1_at_point(safe_dir: str, lon: float, lat: float) -> dict | None:
             with rasterio.open(path) as src:
                 xs, ys = rio_transform("EPSG:4326", src.crs, [lon], [lat])
                 row, col = src.index(xs[0], ys[0])
-                from rasterio.windows import Window
                 win = Window(max(0, col - 1), max(0, row - 1), 3, 3)
                 patch = src.read(1, window=win).astype(float)
                 if patch.size == 0:
@@ -217,6 +217,12 @@ def fetch_sentinel1(df: pd.DataFrame, date_range: tuple[str, str] | None = None,
 
         s1_cache[key] = (safe, pdate)
 
+    def _append_no_data():
+        vv_vals.append(np.nan)
+        vh_vals.append(np.nan)
+        ratio_vals.append(np.nan)
+        dates.append(None)
+
     # ── sample backscatter for every row ──────────────────────────────────────
     vv_vals, vh_vals, ratio_vals, dates = [], [], [], []
     n_ok = 0
@@ -225,10 +231,7 @@ def fetch_sentinel1(df: pd.DataFrame, date_range: tuple[str, str] | None = None,
         key   = (row["_lat_cell"], row["_lon_cell"])
         entry = s1_cache.get(key)
         if entry is None:
-            vv_vals.append(np.nan)
-            vh_vals.append(np.nan)
-            ratio_vals.append(np.nan)
-            dates.append(None)
+            _append_no_data()
             continue
 
         safe, pdate = entry
@@ -240,10 +243,7 @@ def fetch_sentinel1(df: pd.DataFrame, date_range: tuple[str, str] | None = None,
             dates.append(pdate)
             n_ok += 1
         else:
-            vv_vals.append(np.nan)
-            vh_vals.append(np.nan)
-            ratio_vals.append(np.nan)
-            dates.append(None)
+            _append_no_data()
 
     df = df.drop(columns=["_lat_cell", "_lon_cell"], errors="ignore")
     df["S1_VV"]    = vv_vals

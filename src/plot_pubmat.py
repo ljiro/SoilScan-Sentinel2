@@ -19,7 +19,6 @@ import os
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
 import numpy as np
 import pandas as pd
 from matplotlib.patches import FancyBboxPatch
@@ -465,9 +464,9 @@ def fig_overall_performance(df, out_dir):
                                edgecolors="white", linewidths=0.5, alpha=0.9)
 
         # Value labels on top of bars
-        for bar, val in zip(bars, agg_vals):
+        for bar, val, err in zip(bars, agg_vals, agg_err):
             ax_bar.text(bar.get_x() + bar.get_width() / 2,
-                        bar.get_height() + agg_err[agg_vals.index(val)] + 0.012,
+                        bar.get_height() + err + 0.012,
                         f"{val:.3f}", ha="center", va="bottom",
                         fontsize=7.5, color=MODEL_COLORS[mdl], fontweight="bold")
 
