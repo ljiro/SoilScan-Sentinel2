@@ -9,8 +9,9 @@ import glob
 import os
 import re
 import threading
+import time
 import zipfile
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import numpy as np
 import pandas as pd
@@ -18,6 +19,7 @@ import rasterio
 import requests
 from dotenv import load_dotenv
 from rasterio.warp import transform
+from rasterio.windows import Window
 from tqdm import tqdm
 
 load_dotenv()
@@ -585,7 +587,6 @@ def sample_bands_at_point(safe_dir, lon, lat, band_names=None):
                 xs, ys = transform("EPSG:4326", src.crs, [lon], [lat])
                 x, y = xs[0], ys[0]
                 row, col = src.index(x, y)
-                from rasterio.windows import Window
                 try:
                     w = Window(col - 1, row - 1, 3, 3)
                     patch = src.read(1, window=w)
@@ -611,7 +612,6 @@ def sample_bands_all_points(safe_dir, lons, lats, band_names=None):
     Returns (N, 9, 12) array where N = len(lons).
     Points that fall outside the raster extent are filled with NaN.
     """
-    from rasterio.windows import Window
     band_names = band_names or BAND_NAMES
     band_files = find_band_files(safe_dir)
     if len(band_files) < len(band_names):
@@ -649,7 +649,6 @@ def sample_bands_9pixels(safe_dir, lon, lat, band_names=None):
     Row-major order: top-left → top-right → ... → bottom-right.
     Pixel 4 (index 4) is the centre pixel.
     """
-    from rasterio.windows import Window
     band_names = band_names or BAND_NAMES
     band_files = find_band_files(safe_dir)
     if len(band_files) < len(band_names):
@@ -709,7 +708,6 @@ def _append_rows_safe(df_chunk, output_path, retries=6, delay=5):
     waiting and retrying up to `retries` times.  If still locked after all
     retries, the rows are saved to a numbered sidecar file so no data is lost.
     """
-    import time
     for attempt in range(1, retries + 1):
         try:
             df_chunk.to_csv(output_path, mode="a", header=False, index=False, quoting=1)  # QUOTE_ALL
@@ -924,9 +922,8 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
             end_str   = f"{date_range[1]}T23:59:59.000Z"
             offset_tag = f"_dr{date_range[0]}_{date_range[1]}"
             # For local tile matching use midpoint of the range
-            from datetime import datetime as _dt
-            dr_start = _dt.strptime(date_range[0], "%Y-%m-%d").date()
-            dr_end   = _dt.strptime(date_range[1], "%Y-%m-%d").date()
+            dr_start = datetime.strptime(date_range[0], "%Y-%m-%d").date()
+            dr_end   = datetime.strptime(date_range[1], "%Y-%m-%d").date()
             target_d  = dr_start + (dr_end - dr_start) / 2
             tolerance = (dr_end - dr_start).days // 2
             print(f"  [{i+1}/{len(keys)}] Date-range window: {date_range[0]} -> {date_range[1]}")

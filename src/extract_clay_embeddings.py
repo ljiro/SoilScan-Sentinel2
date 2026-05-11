@@ -30,6 +30,7 @@ Run:
 """
 
 import argparse
+import math
 import os
 import sys
 import warnings
@@ -163,7 +164,6 @@ def _ensure_clay_source():
 
 def _normalize_timestamp(dt):
     """Return (week_norm, hour_norm) each as np.array([sin, cos]) for Clay datacube."""
-    import math
     doy  = dt.timetuple().tm_yday
     week = doy / 7.0
     hour = dt.hour
@@ -175,7 +175,6 @@ def _normalize_timestamp(dt):
 
 def _normalize_latlon(lat, lon):
     """Return (lat_norm, lon_norm) each as np.array([sin, cos]) for Clay datacube."""
-    import math
     return (
         np.array([math.sin(lat*math.pi/180), math.cos(lat*math.pi/180)], dtype=np.float32),
         np.array([math.sin(lon*math.pi/180), math.cos(lon*math.pi/180)], dtype=np.float32),
