@@ -1432,7 +1432,8 @@ def plot_regression_scatter(y_true, y_pred, target_col, model_name,
 def train_and_evaluate_regression(df, X, groups, target_col, preprocessor,
                                    num_features, cat_features,
                                    figures_dir="outputs/figures",
-                                   min_groups_for_spatial_cv=4):
+                                   min_groups_for_spatial_cv=4,
+                                   random_kfold=True):
     """Regression pipeline: XGBRegressor, RF, SVR, MLP with GroupKFold CV.
 
     For N/P/K trains on the ordinal integer (0/1/2).
@@ -1454,10 +1455,12 @@ def train_and_evaluate_regression(df, X, groups, target_col, preprocessor,
     y_valid = df.loc[valid_idx, target_col].astype(float)
 
     n_groups = groups_valid.nunique()
-    if n_groups < min_groups_for_spatial_cv:
-        print(f"  Note: {n_groups} spatial group(s) — using 5-fold StratifiedKFold.")
+    if random_kfold or n_groups < min_groups_for_spatial_cv:
+        if random_kfold:
+            print(f"  CV: 5-fold StratifiedKFold (random).")
+        else:
+            print(f"  Note: only {n_groups} spatial group(s) — falling back to 5-fold StratifiedKFold.")
         cv       = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-        # Stratify on rounded labels
         y_strat  = np.clip(np.round(y_valid.to_numpy()).astype(int), 0, 10)
         splitter = lambda X, y, g: cv.split(X, y_strat[: len(X)])
     else:
@@ -1624,6 +1627,7 @@ if __name__ == "__main__":
                 df, X, groups, t, preprocessor,
                 num_feat, cat_feat, figures_dir=args.figures_dir,
                 min_groups_for_spatial_cv=args.min_groups_spatial_cv,
+                random_kfold=args.random_kfold,
             )
             all_results.extend(metrics_list)
         else:

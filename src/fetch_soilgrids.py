@@ -258,21 +258,25 @@ def _download_tile(tile_rel: str, prop: str, local_dir: str) -> str | None:
         return None
 
 
+def _sample_3x3_mean(ds, lon: float, lat: float) -> float:
+    """Sample a 3×3 pixel neighbourhood from an open rasterio dataset. Returns nanmean."""
+    from rasterio.warp import transform as rio_transform
+    from rasterio.windows import Window
+    xs, ys     = rio_transform("EPSG:4326", ds.crs, [lon], [lat])
+    row, col_i = ds.index(xs[0], ys[0])
+    win        = Window(max(0, col_i - 1), max(0, row - 1), 3, 3)
+    patch      = ds.read(1, window=win).astype(float)
+    nodata     = ds.nodata
+    if nodata is not None:
+        patch[patch == nodata] = np.nan
+    return float(np.nanmean(patch))
+
+
 def _sample_tif(tif_path: str, lon: float, lat: float, d_factor: float) -> float:
     """Sample a 3×3 pixel neighbourhood from a local GeoTIFF and apply d_factor."""
     import rasterio
-    from rasterio.warp import transform as rio_transform
-    from rasterio.windows import Window
-
     with rasterio.open(tif_path) as src:
-        xs, ys   = rio_transform("EPSG:4326", src.crs, [lon], [lat])
-        row, col = src.index(xs[0], ys[0])
-        win      = Window(max(0, col - 1), max(0, row - 1), 3, 3)
-        patch    = src.read(1, window=win).astype(float)
-        nodata   = src.nodata
-        if nodata is not None:
-            patch[patch == nodata] = np.nan
-        raw = float(np.nanmean(patch))
+        raw = _sample_3x3_mean(src, lon, lat)
     return (raw / d_factor) if np.isfinite(raw) else np.nan
 
 
@@ -445,22 +449,12 @@ def _build_cog_cache() -> dict[str, object]:
 
 def _fetch_cog(lat: float, lon: float, datasets: dict) -> dict:
     import rasterio
-    from rasterio.warp import transform as rio_transform
-    from rasterio.windows import Window
-
     gdal_env = _gdal_cog_env()
     out = {}
     with rasterio.Env(**gdal_env):
         for col, ds in datasets.items():
             try:
-                xs, ys   = rio_transform("EPSG:4326", ds.crs, [lon], [lat])
-                row, col_idx = ds.index(xs[0], ys[0])
-                win   = Window(max(0, col_idx - 1), max(0, row - 1), 3, 3)
-                patch = ds.read(1, window=win).astype(float)
-                nodata = ds.nodata
-                if nodata is not None:
-                    patch[patch == nodata] = np.nan
-                raw      = float(np.nanmean(patch))
+                raw      = _sample_3x3_mean(ds, lon, lat)
                 prop     = col[3:col.rindex("_", 0, col.rindex("-") - 2)]
                 d_factor = _D_FACTOR.get(prop, 1)
                 out[col] = raw / d_factor if np.isfinite(raw) else np.nan

@@ -71,8 +71,7 @@ def main() -> int:
     # Print the token to stdout so callers can pipe/capture it cleanly.
     # All surrounding informational text goes to stderr to avoid polluting
     # captured output and to reduce accidental token exposure in CI logs.
-    import sys as _sys
-    _err = _sys.stderr
+    _err = sys.stderr
     print("Token generated successfully.", file=_err)
     print(f"token_type: {token_type}", file=_err)
     print(f"expires_in: {expires_in} seconds", file=_err)
