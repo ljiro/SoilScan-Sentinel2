@@ -577,9 +577,7 @@ Local VRT mode (recommended when REST API is blocked):
     )
     args = parser.parse_args()
 
-    if args.local_data_dir is None and not any([
-        os.environ.get("SOILGRIDS_LOCAL_DIR"),
-    ]):
+    if args.local_data_dir is None and not os.environ.get("SOILGRIDS_LOCAL_DIR"):
         # No local dir given — check if default location has VRTs
         default_local = "data/raw/soilgrids"
         if _check_local_vrt(default_local):

@@ -27,7 +27,6 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import rasterio
-import rasterio.sample
 from rasterio.windows import Window
 
 from utils import compute_vegetation_indices
@@ -185,8 +184,7 @@ for file_path, band_name in band_files:
     
     # Create 9 new column names for this band
     neighbor_cols = [f"{band_name}_{i+1}" for i in range(9)]
-    band_data_3x3 = np.zeros((len(coords_projected), 9), dtype=np.float32)
-    band_data_3x3[:] = np.nan  # Initialize with NaN
+    band_data_3x3 = np.full((len(coords_projected), 9), np.nan, dtype=np.float32)
 
     with rasterio.open(file_path) as src:
         for i, (x, y) in enumerate(coords_projected):

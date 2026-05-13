@@ -48,6 +48,21 @@ RETRY_WAIT       = 5     # seconds between retries
 # a 30 m pixel area (SRTM resolution) as the unit catchment area.
 SRTM_RES_M = 30.0
 
+# Approximate metres per degree at Philippine latitude (~16–17°N)
+LAT_M = 111_000.0
+
+
+def _find_nearest(lats, lons, elevations, lat_i, lon_i):
+    """Return (j, dist_j) for the nearest non-NaN neighbour within 2 km of point i."""
+    dlat = (lats - lat_i) * LAT_M
+    dlon = (lons - lon_i) * LAT_M * math.cos(math.radians(lat_i))
+    dist = np.sqrt(dlat**2 + dlon**2)
+    mask = (dist > 1) & (dist < 2000) & ~np.isnan(elevations)
+    if not mask.any():
+        return None, None
+    j = np.argmin(np.where(mask, dist, np.inf))
+    return j, dist[j]
+
 TERRAIN_COLS = [
     "elevation_m",
     "slope_deg",
@@ -130,28 +145,17 @@ def _compute_slope_aspect(
     slopes  = np.full(n, np.nan)
     aspects = np.full(n, np.nan)
 
-    # Approximate metres per degree at Philippine latitude (~16–17°N)
-    # 1° lat ≈ 111 km, 1° lon ≈ 111 km × cos(lat)
-    lat_m = 111_000.0
-
     for i in range(n):
         if np.isnan(elevations[i]):
             continue
 
-        dlat = (lats - lats[i]) * lat_m
-        dlon = (lons - lons[i]) * lat_m * math.cos(_deg_to_rad(lats[i]))
-        dist = np.sqrt(dlat**2 + dlon**2)
-
-        # Exclude self and points further than 2 km
-        mask = (dist > 1) & (dist < 2000) & ~np.isnan(elevations)
-        if not mask.any():
+        j, horiz = _find_nearest(lats, lons, elevations, lats[i], lons[i])
+        if j is None or horiz < 1:
             continue
 
-        j     = np.argmin(np.where(mask, dist, np.inf))
-        dz    = elevations[j] - elevations[i]
-        horiz = dist[j]
-        if horiz < 1:
-            continue
+        dz   = elevations[j] - elevations[i]
+        dlat = (lats - lats[i]) * LAT_M
+        dlon = (lons - lons[i]) * LAT_M * math.cos(_deg_to_rad(lats[i]))
 
         slope_rad = math.atan(abs(dz) / horiz)
         slopes[i] = math.degrees(slope_rad)
@@ -185,19 +189,13 @@ def compute_terrain_features(
     # (positive = convex ridge, negative = concave hollow)
     n    = len(elevations)
     curv = np.full(n, np.nan)
-    lat_m = 111_000.0
     for i in range(n):
         if np.isnan(elevations[i]):
             continue
-        dlat = (lats - lats[i]) * lat_m
-        dlon = (lons - lons[i]) * lat_m * math.cos(_deg_to_rad(lats[i]))
-        dist = np.sqrt(dlat**2 + dlon**2)
-        mask = (dist > 1) & (dist < 2000) & ~np.isnan(elevations)
-        if not mask.any():
+        j, dist_j = _find_nearest(lats, lons, elevations, lats[i], lons[i])
+        if j is None:
             continue
-        j = np.argmin(np.where(mask, dist, np.inf))
-        # Simple 2nd-order finite difference: (z_j - z_i) / dist^2
-        curv[i] = (elevations[j] - elevations[i]) / (dist[j] ** 2 + 1e-9)
+        curv[i] = (elevations[j] - elevations[i]) / (dist_j ** 2 + 1e-9)
 
     northness = np.cos(np.radians(aspects))
     eastness  = np.sin(np.radians(aspects))

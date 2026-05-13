@@ -729,7 +729,7 @@ def _append_rows_safe(df_chunk, output_path, retries=6, delay=5):
 
     # All retries exhausted — save to a sidecar so no data is lost
     base, ext = os.path.splitext(output_path)
-    sidecar = f"{base}_overflow_{int(__import__('time').time())}{ext}"
+    sidecar = f"{base}_overflow_{int(time.time())}{ext}"
     df_chunk.to_csv(sidecar, index=False, quoting=1)  # QUOTE_ALL
     print(f"  ERROR: Could not write to {output_path} after {retries} retries.")
     print(f"  Rows saved to sidecar file: {sidecar}")

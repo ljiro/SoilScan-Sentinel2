@@ -30,6 +30,7 @@ Run:
 """
 
 import argparse
+import datetime
 import math
 import os
 import sys
@@ -1006,15 +1007,14 @@ def extract_embeddings(df, source="both", device="cpu"):
                 if col in df.columns:
                     dt_col = col
                     break
-            import datetime as _dt_mod
             if dt_col:
                 raw_dt = df.iloc[i][dt_col]
                 try:
                     tile_dt = pd.to_datetime(raw_dt).to_pydatetime()
                 except Exception:
-                    tile_dt = _dt_mod.datetime(2025, 10, 15)
+                    tile_dt = datetime.datetime(2025, 10, 15)
             else:
-                tile_dt = _dt_mod.datetime(2025, 10, 15)
+                tile_dt = datetime.datetime(2025, 10, 15)
 
             embeddings[i] = _embed_patch(
                 model, patch, wavelengths, lats[i], lons[i], tile_dt, device
