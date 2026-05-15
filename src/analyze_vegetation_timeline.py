@@ -234,8 +234,7 @@ def analyze(input_csv: str, months: int, max_cloud: int, plot: bool):
         sys.exit("Input CSV must have 'latitude' and 'longitude' columns.")
 
     if "capture_datetime" in df.columns:
-        end_dt = pd.to_datetime(df["capture_datetime"], format="mixed", utc=True).max()
-        end_date = end_dt.date()
+        end_date = pd.to_datetime(df["capture_datetime"], format="mixed", utc=True).max().date()
     else:
         end_date = date.today()
 

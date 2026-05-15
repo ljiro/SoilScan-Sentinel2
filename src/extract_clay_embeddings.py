@@ -1208,9 +1208,9 @@ def main():
             sys.exit(1)
 
         # Apply optional vegetation / cloud quality filters
-        min_ndvi    = getattr(args, "min_ndvi",    None)
-        min_veg_frac = getattr(args, "min_veg_frac", None)
-        max_cloud   = getattr(args, "max_cloud_frac", None)
+        min_ndvi    = args.min_ndvi
+        min_veg_frac = args.min_veg_frac
+        max_cloud   = args.max_cloud_frac
         if any(v is not None for v in [min_ndvi, min_veg_frac, max_cloud]):
             mask = np.ones(len(df), dtype=bool)
             if min_ndvi is not None and "quality_ndvi_mean" in quality_data:

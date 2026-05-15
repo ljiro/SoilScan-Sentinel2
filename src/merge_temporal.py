@@ -81,14 +81,13 @@ def merge(csv1: str, csv2: str, suffix1: str, suffix2: str, output: str):
         _df["latitude"]  = _df["latitude"].round(6)
         _df["longitude"] = _df["longitude"].round(6)
 
-    before_merge = len(df1)
     merged = pd.merge(
         df1, df2_slim,
         on=["latitude", "longitude"],
         how="inner",
         suffixes=("", f"_dup_{suffix2}"),
     )
-    dropped = before_merge - len(merged)
+    dropped = len(df1) - len(merged)
     if dropped > 0:
         print(f"  WARNING: {dropped} rows from primary CSV had no match in secondary "
               f"(inner join on lat/lon). Check that both files cover the same GPS points.")
