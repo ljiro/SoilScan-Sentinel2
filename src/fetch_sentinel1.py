@@ -196,26 +196,26 @@ def fetch_sentinel1(df: pd.DataFrame, date_range: tuple[str, str] | None = None,
             s1_cache[key] = None
             continue
 
-        p          = products[0]
-        pid        = p["Id"]
-        pname      = p.get("Name", pid)
-        m          = re.search(r"_(\d{8})T", pname)
-        pdate      = m.group(1) if m else "unknown"
-        print(f"    Found: {pname[:60]}...  date={pdate}")
+        product      = products[0]
+        product_id   = product["Id"]
+        product_name = product.get("Name", product_id)
+        date_match   = re.search(r"_(\d{8})T", product_name)
+        product_date = date_match.group(1) if date_match else "unknown"
+        print(f"    Found: {product_name[:60]}...  date={product_date}")
 
-        safe = _find_local_s1(pname)
+        safe = _find_local_s1(product_name)
         if safe:
             print(f"    Using local: {safe}")
         else:
             print(f"    Downloading...")
             try:
-                safe = download_and_extract(pid, pname, auth, S1_DOWNLOAD_DIR)
+                safe = download_and_extract(product_id, product_name, auth, S1_DOWNLOAD_DIR)
             except Exception as exc:
                 print(f"    Download failed: {exc}")
                 s1_cache[key] = None
                 continue
 
-        s1_cache[key] = (safe, pdate)
+        s1_cache[key] = (safe, product_date)
 
     def _append_no_data():
         vv_vals.append(np.nan)

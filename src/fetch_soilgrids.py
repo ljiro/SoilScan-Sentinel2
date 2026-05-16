@@ -46,6 +46,7 @@ Usage:
 import argparse
 import os
 import socket
+import subprocess
 import time
 import xml.etree.ElementTree as ET
 
@@ -88,7 +89,6 @@ _ISRIC_IP_CACHE: dict[str, str] = {}
 
 def _resolve_via_nslookup(hostname: str) -> str | None:
     """Use nslookup (Windows built-in) to resolve hostname via Google 8.8.8.8."""
-    import subprocess
     for qtype in ("-type=A", "-type=AAAA"):
         try:
             out = subprocess.run(
