@@ -118,21 +118,21 @@ def search_products(bbox_wkt, start_date, end_date, auth_headers, max_cloud=20):
     results = []
     for p in candidates:
         pid = p["Id"]
-        cc = None
+        cloud_cover = None
         try:
             dr = requests.get(f"{CATALOG_URL}('{pid}')", headers=auth_headers)
             if dr.status_code == 200:
                 for attr in dr.json().get("Attributes", []) or []:
                     if attr.get("Name") == "cloudCover":
-                        cc = float(attr.get("Value", 100))
+                        cloud_cover = float(attr.get("Value", 100))
                         break
         except Exception:
             pass
-        if cc is None or cc <= max_cloud:
+        if cloud_cover is None or cloud_cover <= max_cloud:
             # Use 100.0 for unknown cloud cover so these sort last, not first
-            results.append({**p, "_cc": cc if cc is not None else 100.0})
+            results.append({**p, "_cloud_cover": cloud_cover if cloud_cover is not None else 100.0})
 
-    results.sort(key=lambda x: x["_cc"])
+    results.sort(key=lambda x: x["_cloud_cover"])
     return results[:MAX_TILES_PER_KEY]
 
 
@@ -142,9 +142,9 @@ def _probe_range_support(url, auth_headers):
     session.headers.update(auth_headers)
     try:
         r = session.get(url, headers={"Range": "bytes=0-0"}, stream=True, timeout=(30, 10))
-        status = r.status_code
+        status_code = r.status_code
         r.close()
-        return status == 206
+        return status_code == 206
     except Exception:
         return False
 
@@ -218,8 +218,8 @@ def _parallel_download(url, zip_path, total_bytes, desc, auth_headers, num_chunk
     with tqdm(total=total_bytes, unit="B", unit_scale=True, unit_divisor=1024,
               desc=f"    {desc}", dynamic_ncols=True) as bar:
         with concurrent.futures.ThreadPoolExecutor(max_workers=num_chunks) as pool:
-            futs = {pool.submit(download_chunk, s, e): (s, e) for s, e in ranges}
-            for fut in concurrent.futures.as_completed(futs):
+            futures_map = {pool.submit(download_chunk, s, e): (s, e) for s, e in ranges}
+            for fut in concurrent.futures.as_completed(futures_map):
                 try:
                     fut.result()
                 except Exception as exc:
@@ -961,7 +961,7 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
                     print(f"  [{i+1}/{len(keys)}] No products for cell ({lc:.4f},{lonc:.4f}) "
                           f"window {date_range[0] if date_range else target_d}")
                 else:
-                    cc_str = ", ".join(f"{p['_cc']:.0f}%" for p in products)
+                    cc_str = ", ".join(f"{p['_cloud_cover']:.0f}%" for p in products)
                     print(f"  [{i+1}/{len(keys)}] {len(products)} tile(s) [CC: {cc_str}] — downloading...")
                     safe_dirs = _download_tiles(products, auth_headers)
                     rows_out = _emit_rows(group_rows, safe_dirs, orig_group_id, aug_season=False)

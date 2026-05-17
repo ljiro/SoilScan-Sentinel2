@@ -228,7 +228,7 @@ def _load_clay_model(device="cpu"):
             for k, v in state.items()
             if k.startswith("model.encoder.")
         }
-        missing, unexpected = encoder.load_state_dict(enc_state, strict=True)
+        missing, _ = encoder.load_state_dict(enc_state, strict=True)
         if missing:
             print(f"  WARNING: missing keys: {missing[:3]}")
         encoder.eval().to(device)
@@ -471,8 +471,8 @@ def _lonlat_to_rowcol(src, lon, lat):
 
     wgs84 = CRS.from_epsg(4326)
     if src.crs and src.crs.to_epsg() != 4326:
-        t = Transformer.from_crs(wgs84, src.crs, always_xy=True)
-        x, y = t.transform(lon, lat)
+        transformer = Transformer.from_crs(wgs84, src.crs, always_xy=True)
+        x, y = transformer.transform(lon, lat)
     else:
         x, y = lon, lat
     return rowcol(src.transform, x, y)
@@ -878,12 +878,12 @@ def extract_patch_stats(df, source="sentinel2", composite=False):
             print(f"  Quality summary ({len(valid)} patches with SCL/NDVI data):")
             print(f"    NDVI mean  : {valid.mean():.3f}  (min {valid.min():.3f}, max {valid.max():.3f})")
         if "quality_veg_frac" in quality_data:
-            vf = quality_data["quality_veg_frac"]
-            vf_valid = vf[~np.isnan(vf)]
+            veg_frac = quality_data["quality_veg_frac"]
+            vf_valid = veg_frac[~np.isnan(veg_frac)]
             print(f"    Veg frac   : {vf_valid.mean():.2%} of pixels have NDVI > 0.2")
         if "quality_cloud_frac" in quality_data:
-            cf = quality_data["quality_cloud_frac"]
-            cf_valid = cf[~np.isnan(cf)]
+            cloud_frac = quality_data["quality_cloud_frac"]
+            cf_valid = cloud_frac[~np.isnan(cloud_frac)]
             if len(cf_valid):
                 print(f"    Cloud frac : {cf_valid.mean():.2%} mean (SCL-based)")
 

@@ -893,11 +893,11 @@ def _print_one_model(model_name, y_true, y_pred, folds,
 
     if not is_ph:
         # Use short names for the text confusion matrix
-        col_w = max(16, max(len(n) for n in class_names_short) + 2)
+        column_width = max(16, max(len(n) for n in class_names_short) + 2)
         print(f"\n  Confusion Matrix (rows=Actual, cols=Predicted):")
-        print("  " + " " * col_w + "".join(f"  {c:>{col_w}}" for c in class_names_short))
+        print("  " + " " * column_width + "".join(f"  {c:>{column_width}}" for c in class_names_short))
         for i, rn in enumerate(class_names_short):
-            print(f"  {rn:>{col_w}}" + "".join(f"  {cm[i,j]:>{col_w}}" for j in range(n_classes)))
+            print(f"  {rn:>{column_width}}" + "".join(f"  {cm[i,j]:>{column_width}}" for j in range(n_classes)))
     else:
         cor = np.diag(cm).sum()
         ob1 = sum(cm[i,j] for i in range(n_classes)
