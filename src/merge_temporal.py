@@ -77,9 +77,9 @@ def merge(csv1: str, csv2: str, suffix1: str, suffix2: str, output: str):
 
     # Round GPS coordinates to 6 decimal places (~0.1 m precision) before merging
     # to avoid silent row-drops caused by floating-point CSV round-trip differences
-    for _df in (df1, df2_slim):
-        _df["latitude"]  = _df["latitude"].round(6)
-        _df["longitude"] = _df["longitude"].round(6)
+    for df_item in (df1, df2_slim):
+        df_item["latitude"]  = df_item["latitude"].round(6)
+        df_item["longitude"] = df_item["longitude"].round(6)
 
     merged = pd.merge(
         df1, df2_slim,

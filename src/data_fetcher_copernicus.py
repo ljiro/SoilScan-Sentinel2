@@ -182,9 +182,9 @@ def _parallel_download(url, zip_path, total_bytes, desc, auth_headers, num_chunk
 
     def download_chunk(byte_start, byte_end):
         max_bytes = byte_end - byte_start + 1
-        s = requests.Session()
-        s.headers.update(auth_headers)
-        r = s.get(url, headers={"Range": f"bytes={byte_start}-{byte_end}"},
+        session = requests.Session()
+        session.headers.update(auth_headers)
+        r = session.get(url, headers={"Range": f"bytes={byte_start}-{byte_end}"},
                   stream=True, timeout=(60, 300))
         if r.status_code != 206:
             detail = (r.text or "")[:200].replace("\n", " ").strip()
@@ -197,13 +197,13 @@ def _parallel_download(url, zip_path, total_bytes, desc, auth_headers, num_chunk
         pos = byte_start
         with open(zip_path, "r+b") as f:
             f.seek(pos)
-            for raw in r.iter_content(chunk_size=256 * 1024):
-                if not raw:
+            for chunk in r.iter_content(chunk_size=256 * 1024):
+                if not chunk:
                     continue
                 remaining = max_bytes - written
                 if remaining <= 0:
                     break
-                data = raw[:remaining]
+                data = chunk[:remaining]
                 f.write(data)
                 written += len(data)
                 with bar_lock:
@@ -548,25 +548,25 @@ def find_band_files(safe_dir):
         os.path.join(safe_dir, "GRANULE", "*", "IMG_DATA", "R20m", "*.jp2"),
         os.path.join(safe_dir, "GRANULE", "*", "IMG_DATA", "R60m", "*.jp2"),
     ]
-    jp2s = []
+    jp2_files = []
     for p in patterns:
-        jp2s.extend(glob.glob(p))
+        jp2_files.extend(glob.glob(p))
     band_pattern = re.compile(r"_(B(0[1-9]|1[0-2]|8A))_")
-    out = []
+    band_file_pairs = []
     seen = set()
-    for path in jp2s:
+    for path in jp2_files:
         name = os.path.basename(path)
-        m = band_pattern.search(name)
-        if not m:
+        band_match = band_pattern.search(name)
+        if not band_match:
             continue
-        band = m.group(1)
+        band = band_match.group(1)
         if band in seen:
             continue
         if band not in BAND_NAMES:
             continue
         seen.add(band)
-        out.append((path, band))
-    return sorted(out, key=lambda x: BAND_NAMES.index(x[1]))
+        band_file_pairs.append((path, band))
+    return sorted(band_file_pairs, key=lambda x: BAND_NAMES.index(x[1]))
 
 
 def sample_bands_at_point(safe_dir, lon, lat, band_names=None):
@@ -788,11 +788,11 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
               f"{df['_key'].nunique()} total groups)")
 
     key_to_bbox = {}
-    for (lc, lonc, d) in keys:
+    for (lat_cell, lon_cell, capture_date) in keys:
         margin = SPATIAL_GRID_DEG / 2
-        key_to_bbox[(lc, lonc, d)] = (
-            float(lonc - margin), float(lc - margin),
-            float(lonc + margin), float(lc + margin),
+        key_to_bbox[(lat_cell, lon_cell, capture_date)] = (
+            float(lon_cell - margin), float(lat_cell - margin),
+            float(lon_cell + margin), float(lat_cell + margin),
         )
 
     print("Authenticating with Copernicus...")
@@ -908,8 +908,8 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
         return matched[:MAX_TILES_PER_KEY]
 
     # ── Main loop ─────────────────────────────────────────────────────────────
-    for i, (lc, lonc, d) in enumerate(keys):
-        min_lon, min_lat, max_lon, max_lat = key_to_bbox[(lc, lonc, d)]
+    for i, (lat_cell, lon_cell, capture_date) in enumerate(keys):
+        min_lon, min_lat, max_lon, max_lat = key_to_bbox[(lat_cell, lon_cell, capture_date)]
         wkt = bbox_wkt(min_lon, min_lat, max_lon, max_lat)
 
         # ── Primary season search window ──────────────────────────────────────
@@ -937,16 +937,16 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
                 print(f"  [{i+1}/{len(keys)}] Growing-season target: {target_d} "
                       f"(offset -{growing_season_offset}d from {d})")
 
-        orig_group_id = f"{lc:.4f}_{lonc:.4f}_{d}{offset_tag}"
+        orig_group_id = f"{lat_cell:.4f}_{lon_cell:.4f}_{capture_date}{offset_tag}"
         if orig_group_id in already_done_groups:
-            print(f"  [{i+1}/{len(keys)}] Already done — skipping {d}{offset_tag}")
+            print(f"  [{i+1}/{len(keys)}] Already done — skipping {capture_date}{offset_tag}")
         else:
             # Check disk first — skip catalog API if tiles are already present
             safe_dirs = _match_local_tiles(target_d, tolerance)
             if safe_dirs:
                 print(f"  [{i+1}/{len(keys)}] {len(safe_dirs)} local tile(s) for {target_d} — sampling...")
 
-            group_rows = df[df["_key"] == (lc, lonc, d)]
+            group_rows = df[df["_key"] == (lat_cell, lon_cell, capture_date)]
             rows_out = _emit_rows(group_rows, safe_dirs, orig_group_id, aug_season=False) if safe_dirs else []
 
             # If local tiles yielded nothing (empty, wrong extent, missing bands),
@@ -958,7 +958,7 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
                 auth_headers = get_auth_headers()
                 products = search_products(wkt, start_str, end_str, auth_headers)
                 if not products:
-                    print(f"  [{i+1}/{len(keys)}] No products for cell ({lc:.4f},{lonc:.4f}) "
+                    print(f"  [{i+1}/{len(keys)}] No products for cell ({lat_cell:.4f},{lon_cell:.4f}) "
                           f"window {date_range[0] if date_range else target_d}")
                 else:
                     cc_str = ", ".join(f"{p['_cloud_cover']:.0f}%" for p in products)
@@ -971,9 +971,9 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
                 already_done_groups.add(orig_group_id)
 
         # ── Opposite-season augmentation ──────────────────────────────────────
-        aug_group_id = f"{lc:.4f}_{lonc:.4f}_{d}_aug"
+        aug_group_id = f"{lat_cell:.4f}_{lon_cell:.4f}_{capture_date}_aug"
         if aug_group_id in already_done_groups:
-            print(f"  [{i+1}/{len(keys)}] Already done — skipping {d} aug")
+            print(f"  [{i+1}/{len(keys)}] Already done — skipping {capture_date} aug")
         else:
             opp_start_dt, opp_end_dt = _opposite_season_window(d)
             opp_centre = date(
@@ -998,7 +998,7 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
                     opp_safe_dirs = _download_tiles(opp_products, auth_headers)
 
             if opp_safe_dirs:
-                group_rows = df[df["_key"] == (lc, lonc, d)]
+                group_rows = df[df["_key"] == (lat_cell, lon_cell, capture_date)]
                 opp_rows = _emit_rows(group_rows, opp_safe_dirs, aug_group_id, aug_season=True)
                 if opp_rows and output_path:
                     _append_rows_safe(pd.DataFrame(opp_rows), output_path)

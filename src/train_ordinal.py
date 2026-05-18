@@ -617,8 +617,8 @@ def tune_with_optuna(X_tr, y_tr, X_val, y_val, n_classes: int,
                 objective="multi:softprob", num_class=n_classes,
                 eval_metric="mlogloss", **params,
             )
-        sw = compute_sample_weight("balanced", y_tr)
-        m.fit(X_tr, y_tr, sample_weight=sw)
+        sample_weights = compute_sample_weight("balanced", y_tr)
+        m.fit(X_tr, y_tr, sample_weight=sample_weights)
         yp = np.array(m.predict(X_val))
         if yp.ndim == 2:
             yp = np.argmax(yp, axis=1)
@@ -640,8 +640,8 @@ def tune_with_optuna(X_tr, y_tr, X_val, y_val, n_classes: int,
             class_weight    = "balanced",
             random_state    = 42, n_jobs=-1,
         )
-        sw = compute_sample_weight("balanced", y_tr)
-        m.fit(X_tr, y_tr, sample_weight=sw)
+        sample_weights = compute_sample_weight("balanced", y_tr)
+        m.fit(X_tr, y_tr, sample_weight=sample_weights)
         yp = m.predict(X_val)
         return f1_score(y_val, yp.astype(int), average="macro", zero_division=0)
 
@@ -818,7 +818,7 @@ def _run_one_model(model, model_name, X_valid, y_valid, groups_valid,
             continue
 
         if class_weight:
-            sw = compute_sample_weight("balanced", ytr)
+            sample_weights = compute_sample_weight("balanced", ytr)
             if model_name == "FCNN":
                 # MLPClassifier supports neither class_weight nor sample_weight;
                 # oversample minority classes to achieve the same effect.
@@ -828,7 +828,7 @@ def _run_one_model(model, model_name, X_valid, y_valid, groups_valid,
                 # SVC handles class_weight via constructor; no sample_weight in fit.
                 model.fit(Xtr, ytr)
             else:
-                model.fit(Xtr, ytr, sample_weight=sw)
+                model.fit(Xtr, ytr, sample_weight=sample_weights)
         else:
             model.fit(Xtr, ytr)
 
@@ -1105,8 +1105,8 @@ def save_best_model(best_model, best_model_name, preprocessor,
     elif best_model_name == "SVM":
         model_clone.fit(Xp, y_valid)
     else:
-        sw = compute_sample_weight("balanced", y_valid)
-        model_clone.fit(Xp, y_valid, sample_weight=sw)
+        sample_weights = compute_sample_weight("balanced", y_valid)
+        model_clone.fit(Xp, y_valid, sample_weight=sample_weights)
 
     pipeline = Pipeline([
         ("preprocessor", preprocessor),
@@ -1338,13 +1338,6 @@ def _print_one_regression_model(model_name, y_true, y_pred, folds,
         y_true_cls = np.array([
             int(np.argmin(np.abs(ph_vals - v))) for v in y_true
         ])
-        y_pred_cls = np.array([
-            np.clip(int(np.round(np.argmin(np.abs(ph_vals - v)))), 0, n_classes - 1)
-            for v in y_pred
-        ])
-        # Simpler: round continuous prediction to index
-        # pred is already on a 0-10 float scale if we trained on ph index
-        # But we train on raw pH floats — convert back
         y_pred_cls = np.array([
             int(np.clip(np.argmin(np.abs(ph_vals - v)), 0, n_classes - 1))
             for v in np.clip(y_pred, ph_vals[0], ph_vals[-1])
