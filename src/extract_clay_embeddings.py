@@ -750,10 +750,10 @@ def _patch_stats(patch: np.ndarray, band_names: list) -> np.ndarray:
     from scipy.ndimage import uniform_filter
     for c in range(C):
         band = patch[c]
-        mu   = uniform_filter(band, size=5)
-        mu2  = uniform_filter(band**2, size=5)
-        var  = mu2 - mu**2
-        feats.append(float(np.nanmean(var)))
+        band_mean    = uniform_filter(band, size=5)
+        band_mean_sq = uniform_filter(band**2, size=5)
+        band_var     = band_mean_sq - band_mean**2
+        feats.append(float(np.nanmean(band_var)))
 
     return np.array(feats, dtype=np.float32)
 

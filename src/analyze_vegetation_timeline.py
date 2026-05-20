@@ -162,8 +162,8 @@ def _make_s3_client():
 def _s3_find_band_keys(s3, product_name: str, bands: list[str]) -> dict[str, str]:
     """List the S3 prefix once and return a {band: key} dict for the requested bands."""
     date_str = product_name.split("_")[2][:8]
-    y, mo, d = date_str[:4], date_str[4:6], date_str[6:8]
-    prefix = f"Sentinel-2/MSI/L2A/{y}/{mo}/{d}/{product_name}/"
+    year, month, day = date_str[:4], date_str[4:6], date_str[6:8]
+    prefix = f"Sentinel-2/MSI/L2A/{year}/{month}/{day}/{product_name}/"
     band_pats = {b: re.compile(rf"_{b}_\d+m\.jp2$") for b in bands}
     found: dict[str, str] = {}
     try:
@@ -295,12 +295,12 @@ def analyze(input_csv: str, months: int, max_cloud: int, plot: bool):
     # ── aggregate and report ──────────────────────────────────────────────────
     rows = []
     for cluster_key, months_data in month_ndvi.items():
-        lat_s, lon_s = cluster_key.split(",")
+        lat_str, lon_str = cluster_key.split(",")
         for month_key, vals in sorted(months_data.items()):
             rows.append({
                 "cluster":    cluster_key,
-                "lat":        float(lat_s),
-                "lon":        float(lon_s),
+                "lat":        float(lat_str),
+                "lon":        float(lon_str),
                 "month":      month_key,
                 "ndvi_mean":  float(np.mean(vals)),
                 "ndvi_max":   float(np.max(vals)),
@@ -351,9 +351,9 @@ def analyze(input_csv: str, months: int, max_cloud: int, plot: bool):
             import matplotlib.pyplot as plt
             fig, ax = plt.subplots(figsize=(10, 5))
             for cluster_key, months_data in month_ndvi.items():
-                mons  = sorted(months_data.keys())
-                means = [float(np.mean(months_data[m])) for m in mons]
-                ax.plot(mons, means, marker="o", label=cluster_key, alpha=0.7)
+                months      = sorted(months_data.keys())
+                monthly_means = [float(np.mean(months_data[m])) for m in months]
+                ax.plot(months, monthly_means, marker="o", label=cluster_key, alpha=0.7)
             ax.set_xlabel("Month")
             ax.set_ylabel("Mean NDVI")
             ax.set_title("Monthly NDVI Profile per Spatial Cluster")

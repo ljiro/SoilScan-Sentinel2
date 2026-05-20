@@ -163,8 +163,8 @@ def fetch_sentinel1(df: pd.DataFrame, date_range: tuple[str, str] | None = None,
 
     print(f"Searching S1 GRD for {len(cells)} spatial cells...")
 
-    for lat_c, lon_c in cells:
-        key = (lat_c, lon_c)
+    for lat_cell, lon_cell in cells:
+        key = (lat_cell, lon_cell)
         half = 0.05
         bbox_wkt = (
             f"POLYGON(({lon_c-half} {lat_c-half},{lon_c+half} {lat_c-half},"

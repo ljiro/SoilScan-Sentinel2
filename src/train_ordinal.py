@@ -154,29 +154,29 @@ def _add_spectral_indices(df):
     - NDWI / NDMI                : moisture content
     - CI_re                      : crop health via red-edge
     """
-    b = {col: df[col].astype(float) for col in
-         ["B02", "B03", "B04", "B05", "B06", "B07", "B08", "B8A", "B11", "B12"]}
+    bands = {col: df[col].astype(float) for col in
+             ["B02", "B03", "B04", "B05", "B06", "B07", "B08", "B8A", "B11", "B12"]}
 
     indices = {}
 
     # Vegetation indices
-    indices["NDVI"]  = (b["B08"] - b["B04"]) / (b["B08"] + b["B04"] + _EPS)
-    indices["EVI"]   = 2.5 * (b["B08"] - b["B04"]) / (b["B08"] + 6*b["B04"] - 7.5*b["B02"] + 1 + _EPS)
-    indices["SAVI"]  = 1.5 * (b["B08"] - b["B04"]) / (b["B08"] + b["B04"] + 0.5 + _EPS)
-    indices["MSAVI"] = (2*b["B08"] + 1 - np.sqrt(np.maximum((2*b["B08"] + 1)**2 - 8*(b["B08"] - b["B04"]), 0))) / 2
+    indices["NDVI"]  = (bands["B08"] - bands["B04"]) / (bands["B08"] + bands["B04"] + _EPS)
+    indices["EVI"]   = 2.5 * (bands["B08"] - bands["B04"]) / (bands["B08"] + 6*bands["B04"] - 7.5*bands["B02"] + 1 + _EPS)
+    indices["SAVI"]  = 1.5 * (bands["B08"] - bands["B04"]) / (bands["B08"] + bands["B04"] + 0.5 + _EPS)
+    indices["MSAVI"] = (2*bands["B08"] + 1 - np.sqrt(np.maximum((2*bands["B08"] + 1)**2 - 8*(bands["B08"] - bands["B04"]), 0))) / 2
 
     # Red-edge indices (sensitive to chlorophyll / nitrogen)
-    indices["NDRE"]   = (b["B8A"] - b["B05"]) / (b["B8A"] + b["B05"] + _EPS)
-    indices["CHL_re"] = (b["B8A"] / b["B05"]) - 1   # Chlorophyll Red-Edge index
+    indices["NDRE"]   = (bands["B8A"] - bands["B05"]) / (bands["B8A"] + bands["B05"] + _EPS)
+    indices["CHL_re"] = (bands["B8A"] / bands["B05"]) - 1   # Chlorophyll Red-Edge index
 
     # Soil indices
-    indices["BSI"] = ((b["B11"] + b["B04"]) - (b["B08"] + b["B02"])) / \
-                     ((b["B11"] + b["B04"]) + (b["B08"] + b["B02"]) + _EPS)
-    indices["BI"]  = np.sqrt((b["B04"]**2 + b["B08"]**2) / 2)   # Brightness Index
+    indices["BSI"] = ((bands["B11"] + bands["B04"]) - (bands["B08"] + bands["B02"])) / \
+                     ((bands["B11"] + bands["B04"]) + (bands["B08"] + bands["B02"]) + _EPS)
+    indices["BI"]  = np.sqrt((bands["B04"]**2 + bands["B08"]**2) / 2)   # Brightness Index
 
     # Moisture / water
-    indices["NDWI"] = (b["B03"] - b["B08"]) / (b["B03"] + b["B08"] + _EPS)
-    indices["NDMI"] = (b["B08"] - b["B11"]) / (b["B08"] + b["B11"] + _EPS)
+    indices["NDWI"] = (bands["B03"] - bands["B08"]) / (bands["B03"] + bands["B08"] + _EPS)
+    indices["NDMI"] = (bands["B08"] - bands["B11"]) / (bands["B08"] + bands["B11"] + _EPS)
 
     return pd.DataFrame(indices, index=df.index)
 
@@ -426,13 +426,13 @@ def build_pipeline(num_features, cat_features, n_pca: int | None = None):
 
 def _ci95(values):
     """95% confidence interval using t-distribution (appropriate for small n)."""
-    n = len(values)
-    if n < 2:
+    num_values = len(values)
+    if num_values < 2:
         return 0.0
     mean = np.mean(values)
-    se = st.sem(values)
-    h = se * st.t.ppf(0.975, df=n - 1)
-    return h
+    std_error = st.sem(values)
+    margin_of_error = std_error * st.t.ppf(0.975, df=num_values - 1)
+    return margin_of_error
 
 
 def get_feature_names(preprocessor, num_features, cat_features):
@@ -879,8 +879,8 @@ def _print_one_model(model_name, y_true, y_pred, folds,
     for lbl, vals in [("OA", folds["oa"]), ("Macro F1", folds["macro_f1"]),
                       ("Weighted F1", folds["weighted_f1"]),
                       ("Kappa", folds["kappa"]), ("MAE", folds["mae"])]:
-        m, s, ci = np.mean(vals), np.std(vals), _ci95(vals)
-        print(f"  {lbl:<16} {m:>7.4f}  {s:>7.4f}  +/-{ci:>10.4f}")
+        mean_val, std_val, ci_val = np.mean(vals), np.std(vals), _ci95(vals)
+        print(f"  {lbl:<16} {mean_val:>7.4f}  {std_val:>7.4f}  +/-{ci_val:>10.4f}")
 
     # Translate ordinal MAE to real units for interpretability
     real_step, real_unit = MAE_REAL_UNITS.get(target_col, (1.0, unit))
@@ -1672,7 +1672,7 @@ if __name__ == "__main__":
         print(f"  {'-'*8} {'-'*16} {'-'*8}  {'-'*6}  {'-'*8}")
         for tgt in df_res["target"].unique():
             sub = df_res[df_res["target"] == tgt]
-            best = sub.loc[sub["kappa"].idxmax()]
+            best = sub.loc[subands["kappa"].idxmax()]
             print(f"  {tgt.upper():<8} {best['model']:<16} "
                   f"{best['kappa']:>8.3f}  "
                   f"{best['oa']:>6.3f}  "

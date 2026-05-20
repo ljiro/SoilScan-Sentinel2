@@ -928,14 +928,14 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
             tolerance = (dr_end - dr_start).days // 2
             print(f"  [{i+1}/{len(keys)}] Date-range window: {date_range[0]} -> {date_range[1]}")
         else:
-            target_d   = d - timedelta(days=growing_season_offset)
+            target_d   = capture_date - timedelta(days=growing_season_offset)
             offset_tag = f"_gs{growing_season_offset}" if growing_season_offset else "_orig"
             start_str  = (target_d - timedelta(days=DATE_TOLERANCE_DAYS)).strftime("%Y-%m-%dT00:00:00.000Z")
             end_str    = (target_d + timedelta(days=DATE_TOLERANCE_DAYS)).strftime("%Y-%m-%dT23:59:59.000Z")
             tolerance  = DATE_TOLERANCE_DAYS
             if growing_season_offset:
                 print(f"  [{i+1}/{len(keys)}] Growing-season target: {target_d} "
-                      f"(offset -{growing_season_offset}d from {d})")
+                      f"(offset -{growing_season_offset}d from {capture_date})")
 
         orig_group_id = f"{lat_cell:.4f}_{lon_cell:.4f}_{capture_date}{offset_tag}"
         if orig_group_id in already_done_groups:
@@ -975,7 +975,7 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
         if aug_group_id in already_done_groups:
             print(f"  [{i+1}/{len(keys)}] Already done — skipping {capture_date} aug")
         else:
-            opp_start_dt, opp_end_dt = _opposite_season_window(d)
+            opp_start_dt, opp_end_dt = _opposite_season_window(capture_date)
             opp_centre = date(
                 int(opp_start_dt[:4]),
                 int(opp_start_dt[5:7]),
