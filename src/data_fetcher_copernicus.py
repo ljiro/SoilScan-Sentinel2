@@ -116,8 +116,8 @@ def search_products(bbox_wkt, start_date, end_date, auth_headers, max_cloud=20):
         return []
 
     results = []
-    for p in candidates:
-        pid = p["Id"]
+    for product in candidates:
+        pid = product["Id"]
         cloud_cover = None
         try:
             dr = requests.get(f"{CATALOG_URL}('{pid}')", headers=auth_headers)
@@ -130,7 +130,7 @@ def search_products(bbox_wkt, start_date, end_date, auth_headers, max_cloud=20):
             pass
         if cloud_cover is None or cloud_cover <= max_cloud:
             # Use 100.0 for unknown cloud cover so these sort last, not first
-            results.append({**p, "_cloud_cover": cloud_cover if cloud_cover is not None else 100.0})
+            results.append({**product, "_cloud_cover": cloud_cover if cloud_cover is not None else 100.0})
 
     results.sort(key=lambda x: x["_cloud_cover"])
     return results[:MAX_TILES_PER_KEY]
@@ -152,8 +152,8 @@ def _probe_range_support(url, auth_headers):
 def _verify_zip(zip_path):
     """Full CRC integrity check. Returns True only if every entry passes testzip()."""
     try:
-        with zipfile.ZipFile(zip_path, "r") as z:
-            bad = z.testzip()   # returns first bad filename, or None if all OK
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            bad = zf.testzip()   # returns first bad filename, or None if all OK
             return bad is None
     except Exception:
         return False
@@ -890,8 +890,8 @@ def augment_field_data_copernicus(csv_path, output_path=None, max_products=None,
     def _safe_date(safe_path):
         """Extract sensing date (YYYYMMDD) from .SAFE product name."""
         name = os.path.basename(safe_path)
-        m = re.search(r"_(\d{8})T\d{6}_", name)
-        return m.group(1) if m else None
+        date_match = re.search(r"_(\d{8})T\d{6}_", name)
+        return date_match.group(1) if date_match else None
 
     local_safe_dirs = _find_local_safe_dirs()
     print(f"  Found {len(local_safe_dirs)} .SAFE product(s) already on disk.")

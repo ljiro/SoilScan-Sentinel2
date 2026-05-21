@@ -152,23 +152,23 @@ def fetch_sentinel1(df: pd.DataFrame, date_range: tuple[str, str] | None = None,
     auth = get_auth_headers()
 
     # Spatial cell grouping (same as data_fetcher_copernicus)
-    df["_lat_cell"] = (df["latitude"]  / SPATIAL_GRID_DEG).round() * SPATIAL_GRID_DEG
-    df["_lon_cell"] = (df["longitude"] / SPATIAL_GRID_DEG).round() * SPATIAL_GRID_DEG
-    cells = df[["_lat_cell", "_lon_cell"]].drop_duplicates().values.tolist()
+    df["_lat_cellell"] = (df["latitude"]  / SPATIAL_GRID_DEG).round() * SPATIAL_GRID_DEG
+    df["_lon_cellell"] = (df["longitude"] / SPATIAL_GRID_DEG).round() * SPATIAL_GRID_DEG
+    cells = df[["_lat_cellell", "_lon_cellell"]].drop_duplicates().values.tolist()
 
     os.makedirs(S1_DOWNLOAD_DIR, exist_ok=True)
 
-    # s1_cache[lat_cell, lon_cell] = (safe_dir, product_date_str)
+    # s1_cache[lat_cellell, lon_cellell] = (safe_dir, product_date_str)
     s1_cache: dict[tuple, tuple[str, str] | None] = {}
 
     print(f"Searching S1 GRD for {len(cells)} spatial cells...")
 
-    for lat_cell, lon_cell in cells:
-        key = (lat_cell, lon_cell)
+    for lat_cellell, lon_cellell in cells:
+        key = (lat_cellell, lon_cellell)
         half = 0.05
         bbox_wkt = (
-            f"POLYGON(({lon_c-half} {lat_c-half},{lon_c+half} {lat_c-half},"
-            f"{lon_c+half} {lat_c+half},{lon_c-half} {lat_c+half},{lon_c-half} {lat_c-half}))"
+            f"POLYGON(({lon_cell-half} {lat_cell-half},{lon_cell+half} {lat_cell-half},"
+            f"{lon_cell+half} {lat_cell+half},{lon_cell-half} {lat_cell+half},{lon_cell-half} {lat_cell-half}))"
         )
 
         # Determine date window
@@ -177,7 +177,7 @@ def fetch_sentinel1(df: pd.DataFrame, date_range: tuple[str, str] | None = None,
             end_str   = f"{date_range[1]}T23:59:59.000Z"
         else:
             # Use the median capture date of points in this cell
-            cell_rows = df[(df["_lat_cell"] == lat_c) & (df["_lon_cell"] == lon_c)]
+            cell_rows = df[(df["_lat_cellell"] == lat_cell) & (df["_lon_cellell"] == lon_cell)]
             if "capture_datetime" in cell_rows.columns:
                 median_dt = pd.to_datetime(
                     cell_rows["capture_datetime"], format="mixed", utc=True
@@ -188,7 +188,7 @@ def fetch_sentinel1(df: pd.DataFrame, date_range: tuple[str, str] | None = None,
             start_str = (target - timedelta(days=DATE_TOLERANCE_DAYS)).strftime("%Y-%m-%dT00:00:00.000Z")
             end_str   = (target + timedelta(days=DATE_TOLERANCE_DAYS)).strftime("%Y-%m-%dT23:59:59.000Z")
 
-        print(f"  Cell ({lat_c:.4f}, {lon_c:.4f})  window: {start_str[:10]} → {end_str[:10]}")
+        print(f"  Cell ({lat_cell:.4f}, {lon_cell:.4f})  window: {start_str[:10]} → {end_str[:10]}")
 
         products = search_s1_products(bbox_wkt, start_str, end_str, auth)
         if not products:
@@ -228,7 +228,7 @@ def fetch_sentinel1(df: pd.DataFrame, date_range: tuple[str, str] | None = None,
     n_ok = 0
 
     for _, row in df.iterrows():
-        key   = (row["_lat_cell"], row["_lon_cell"])
+        key   = (row["_lat_cellell"], row["_lon_cellell"])
         entry = s1_cache.get(key)
         if entry is None:
             _append_no_data()
@@ -245,7 +245,7 @@ def fetch_sentinel1(df: pd.DataFrame, date_range: tuple[str, str] | None = None,
         else:
             _append_no_data()
 
-    df = df.drop(columns=["_lat_cell", "_lon_cell"], errors="ignore")
+    df = df.drop(columns=["_lat_cellell", "_lon_cellell"], errors="ignore")
     df["S1_VV"]    = vv_vals
     df["S1_VH"]    = vh_vals
     df["S1_VV_VH"] = ratio_vals

@@ -1672,7 +1672,7 @@ if __name__ == "__main__":
         print(f"  {'-'*8} {'-'*16} {'-'*8}  {'-'*6}  {'-'*8}")
         for tgt in df_res["target"].unique():
             sub = df_res[df_res["target"] == tgt]
-            best = sub.loc[subands["kappa"].idxmax()]
+            best = sub.loc[sub["kappa"].idxmax()]
             print(f"  {tgt.upper():<8} {best['model']:<16} "
                   f"{best['kappa']:>8.3f}  "
                   f"{best['oa']:>6.3f}  "

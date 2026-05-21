@@ -352,7 +352,7 @@ def analyze(input_csv: str, months: int, max_cloud: int, plot: bool):
             fig, ax = plt.subplots(figsize=(10, 5))
             for cluster_key, months_data in month_ndvi.items():
                 months      = sorted(months_data.keys())
-                monthly_means = [float(np.mean(months_data[m])) for m in months]
+                monthly_means = [float(np.mean(months_data[month_key])) for month_key in months]
                 ax.plot(months, monthly_means, marker="o", label=cluster_key, alpha=0.7)
             ax.set_xlabel("Month")
             ax.set_ylabel("Mean NDVI")

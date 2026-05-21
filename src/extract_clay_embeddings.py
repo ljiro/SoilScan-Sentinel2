@@ -618,11 +618,9 @@ def _patch_quality(patch_reflectance, scl=None, band_names=None):
         valid_mask = np.isin(scl, [_SCL_VEGETATION, _SCL_BARE_SOIL, _SCL_WATER])
         cloud_frac = float(np.mean(cloud_mask))
         valid_frac = float(np.mean(valid_mask))
-        scl_ok     = True
     else:
         cloud_frac = float("nan")
         valid_frac = float("nan")
-        scl_ok     = False
 
     return {
         "quality_ndvi_mean":  ndvi_mean,
@@ -630,7 +628,7 @@ def _patch_quality(patch_reflectance, scl=None, band_names=None):
         "quality_veg_frac":   veg_frac,
         "quality_cloud_frac": cloud_frac,
         "quality_valid_frac": valid_frac,
-        "quality_scl_ok":     scl_ok,
+        "quality_scl_ok":     scl is not None,
     }
 
 
@@ -825,12 +823,10 @@ def extract_patch_stats(df, source="sentinel2", composite=False):
                 safes = pt_to_s2s.get(key) or []
                 if safes:
                     patch_data = _composite_s2_patch(safes, lats[i], lons[i])
-                    band_names = S2_BAND_NAMES
             else:
                 safe = pt_to_s2.get(key)
                 if safe:
                     patch_data = _extract_s2_patch(safe, lats[i], lons[i])
-                    band_names = S2_BAND_NAMES
 
         if patch_data is None and source in ("landsat", "both"):
             l8 = pt_to_l8.get(key)
