@@ -93,6 +93,7 @@ Every run of `extract_clay_embeddings.py` writes per-patch quality metrics along
 | `quality_veg_frac` | Fraction of pixels with NDVI > 0.2 |
 | `quality_cloud_frac` | Fraction flagged as cloud or shadow (SCL-based) |
 | `quality_valid_frac` | Fraction classified as vegetation / bare soil / water |
+| `quality_scl_ok` | Boolean — `False` when SCL band was unavailable; cloud/shadow fracs will be NaN |
 
 Optional filters drop rows that fail thresholds before saving:
 
@@ -302,6 +303,11 @@ python src/train_ordinal.py data/processed/field_data_growing_soilgrids.csv --de
 
 # With hyperparameter tuning (Optuna, ~5-10 min extra per target)
 python src/train_ordinal.py data/processed/field_data_growing_soilgrids.csv --deduplicate --tune
+
+# Optional: append Sentinel-1 GRD backscatter (VV, VH) — not yet benchmarked
+python src/fetch_sentinel1.py data/processed/field_data_growing_soilgrids.csv \
+  --growing-season-offset 105 \
+  --output data/processed/field_data_growing_soilgrids_s1.csv
 ```
 
 ---
@@ -332,7 +338,8 @@ SoilScan-Sentinel2/
 │   ├── train_ordinal.py                           # Classification + regression training
 │   ├── analyze_vegetation_timeline.py             # Monthly NDVI profile → peak date-range
 │   ├── merge_temporal.py                          # Merge two temporal feature CSVs
-│   └── fetch_soilgrids.py                         # Add SoilGrids v2 priors (sg_* columns)
+│   ├── fetch_soilgrids.py                         # Add SoilGrids v2 priors (sg_* columns)
+│   └── fetch_sentinel1.py                         # Optional: add S1 GRD VV/VH backscatter
 ├── .env.example
 ├── requirements.txt
 └── README.md
@@ -354,7 +361,7 @@ SoilScan-Sentinel2/
 
 ## Model Export
 
-Pass `--save-models` to save the best model per target after training. Two files are written per target:
+Models are saved by default (`--save-models` is on). Use `--no-save-models` to skip. Two files are written per target:
 
 | File | Contents |
 |------|----------|
@@ -379,6 +386,7 @@ y_pred = pipeline.predict(X_new[meta["feature_names"]])
 - **Collect High-N samples**: N is Low everywhere across both barangays. Target plots with heavy urea/ammonium fertilisation 2–4 weeks before an S2 overpass.
 - **Add a third barangay**: With only 2 groups, spatial CV is 2-fold. A third sampling location would enable leave-one-out spatial validation and produce more robust generalization estimates.
 - **Benchmark patch statistics and Clay embeddings**: `extract_clay_embeddings.py` produces 64 patch-level statistics or 1024-dim Clay v1.5 embeddings — neither has been compared against the raw-band baseline on this dataset.
+- **Evaluate Sentinel-1 backscatter**: `fetch_sentinel1.py` is implemented and fetches C-band VV/VH from CDSE. Benchmark whether S1 features (soil moisture, surface roughness) improve Kappa over the S2+SoilGrids baseline, particularly for K and pH.
 
 ## Acknowledgments
 
