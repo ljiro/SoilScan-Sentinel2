@@ -26,3 +26,13 @@ Thumbs.db
 
 # Claude Code project instructions (local only)
 CLAUDE.md
+.claude/
+
+# Downloaded model source (auto-fetched at runtime)
+src/.clay_src/
+
+# Earthdata / NASA credentials
+.dodsrc
+
+# Python cache (alternate naming)
+__pycache__/
