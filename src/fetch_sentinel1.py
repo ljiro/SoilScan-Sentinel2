@@ -201,7 +201,18 @@ def fetch_sentinel1(df: pd.DataFrame, date_range: tuple[str, str] | None = None,
         product_name = product.get("Name", product_id)
         date_match   = re.search(r"_(\d{8})T", product_name)
         product_date = date_match.group(1) if date_match else "unknown"
-        print(f"    Found: {product_name[:60]}...  date={product_date}")
+        # Warn when S1 acquisition is far from the centre of the search window
+        try:
+            from datetime import date as _date
+            s1_dt     = _date(int(product_date[:4]), int(product_date[4:6]), int(product_date[6:8]))
+            win_start = _date.fromisoformat(start_str[:10])
+            win_end   = _date.fromisoformat(end_str[:10])
+            win_mid   = win_start + (win_end - win_start) / 2
+            gap_days  = abs((s1_dt - win_mid).days)
+            gap_note  = f"  [gap {gap_days}d from window centre — consider tightening date range]" if gap_days > 14 else ""
+        except Exception:
+            gap_note = ""
+        print(f"    Found: {product_name[:60]}...  date={product_date}{gap_note}")
 
         safe = _find_local_s1(product_name)
         if safe:

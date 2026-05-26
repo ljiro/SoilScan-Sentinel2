@@ -387,6 +387,9 @@ y_pred = pipeline.predict(X_new[meta["feature_names"]])
 - **Add a third barangay**: With only 2 groups, spatial CV is 2-fold. A third sampling location would enable leave-one-out spatial validation and produce more robust generalization estimates.
 - **Benchmark patch statistics and Clay embeddings**: `extract_clay_embeddings.py` produces 64 patch-level statistics or 1024-dim Clay v1.5 embeddings — neither has been compared against the raw-band baseline on this dataset.
 - **Evaluate Sentinel-1 backscatter**: `fetch_sentinel1.py` is implemented and fetches C-band VV/VH from CDSE. Benchmark whether S1 features (soil moisture, surface roughness) improve Kappa over the S2+SoilGrids baseline, particularly for K and pH.
+- **Adaptive cloud threshold**: `data_fetcher_copernicus.py` uses a fixed `max_cloud=20` cutoff. A tiered fallback (≤15% → ≤25% → ≤40%) would reduce download failures during cloudy seasons while still preferring clean tiles.
+- **SoilGrids batch parallelism**: `fetch_soilgrids.py` queries one cell at a time with a 0.5 s delay. Batching requests with a `requests.Session` could reduce wall-clock time from ~30 min to ~5 min on large datasets without exceeding ISRIC rate limits.
+- **NDVI result caching in vegetation timeline**: `analyze_vegetation_timeline.py` re-samples every tile on every run. A simple cache CSV keyed by (product name, cluster) would avoid redundant I/O when re-running with different `--months` windows.
 
 ## Acknowledgments
 

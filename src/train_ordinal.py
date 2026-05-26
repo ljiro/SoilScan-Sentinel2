@@ -799,10 +799,16 @@ def _run_one_model(model, model_name, X_valid, y_valid, groups_valid,
     all_true, all_pred = [], []
     last_Xte, last_yte = None, None
 
-    for train_idx, test_idx in gkf(X_valid, y_valid, groups_valid):
+    for fold_num, (train_idx, test_idx) in enumerate(gkf(X_valid, y_valid, groups_valid), 1):
         Xtr = preprocessor.fit_transform(X_valid.iloc[train_idx])
         Xte = preprocessor.transform(X_valid.iloc[test_idx])
         ytr, yte = y_valid.iloc[train_idx], y_valid.iloc[test_idx]
+        train_dist = {int(c): int((ytr == c).sum()) for c in np.unique(ytr)}
+        test_dist  = {int(c): int((yte == c).sum()) for c in np.unique(yte)}
+        all_classes = set(np.unique(y_valid))
+        absent = sorted(all_classes - set(np.unique(yte)))
+        note   = f"  [class {absent} absent from test]" if absent else ""
+        print(f"    Fold {fold_num}  train={train_dist}  test={test_dist}{note}")
 
         if use_smote:
             try:
