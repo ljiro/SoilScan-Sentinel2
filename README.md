@@ -2,6 +2,8 @@
 
 Ordinal soil nutrient classification for Philippine highland smallholder farms using Sentinel-2 satellite imagery, terrain features, and SoilGrids priors.
 
+**Live demo:** https://skibidata-webapp-model-integration-production.up.railway.app
+
 ---
 
 ## Overview
