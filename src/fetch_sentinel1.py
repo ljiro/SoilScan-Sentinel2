@@ -152,8 +152,8 @@ def fetch_sentinel1(df: pd.DataFrame, date_range: tuple[str, str] | None = None,
     auth = get_auth_headers()
 
     # Spatial cell grouping (same as data_fetcher_copernicus)
-    df["_lat_cell"] = (df["latitude"]  / SPATIAL_GRID_DEG).round() * SPATIAL_GRID_DEG
-    df["_lon_cell"] = (df["longitude"] / SPATIAL_GRID_DEG).round() * SPATIAL_GRID_DEG
+    df["_lat_cell"] = (df["latitude"]  // SPATIAL_GRID_DEG) * SPATIAL_GRID_DEG
+    df["_lon_cell"] = (df["longitude"] // SPATIAL_GRID_DEG) * SPATIAL_GRID_DEG
     cells = df[["_lat_cell", "_lon_cell"]].drop_duplicates().values.tolist()
 
     os.makedirs(S1_DOWNLOAD_DIR, exist_ok=True)

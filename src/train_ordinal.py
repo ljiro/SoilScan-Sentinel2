@@ -872,7 +872,7 @@ def _print_one_model(model_name, y_true, y_pred, folds,
     wf1     = f1_score(y_true, y_pred, average="weighted", zero_division=0)
     kappa   = cohen_kappa_score(y_true, y_pred)
     mae_raw = mean_absolute_error(y_true, y_pred)
-    mae_d   = mae_raw * 0.4 if is_ph else mae_raw
+    mae_display = mae_raw * 0.4 if is_ph else mae_raw
     unit    = "pH units" if is_ph else "class steps"
     labels  = list(range(n_classes))
     cm      = confusion_matrix(y_true, y_pred, labels=labels)
@@ -895,7 +895,7 @@ def _print_one_model(model_name, y_true, y_pred, folds,
 
     print(f"\n  Pooled: OA={oa:.4f}  MacroF1={mf1:.4f}  "
           f"WF1={wf1:.4f}  Kappa={kappa:.4f}({kappa_lbl})  "
-          f"MAE={mae_d:.4f} {unit}{mae_real_str}")
+          f"MAE={mae_display:.4f} {unit}{mae_real_str}")
 
     if not is_ph:
         # Use short names for the text confusion matrix
@@ -1070,9 +1070,8 @@ def train_and_evaluate(df, X, groups, target_col, preprocessor,
         )
         importances_by_model[model_name] = (feat_names, imps)
 
-    best_name = max(results_by_model, key=lambda n: results_by_model[n]["oa"])
-    print(f"\n  Best for {target_col}: {best_name} "
-          f"(OA={results_by_model[best_name]['oa']:.4f})")
+    print(f"\n  Best for {target_col}: {best_model_name} "
+          f"(OA={results_by_model[best_model_name]['oa']:.4f})")
 
     plot_model_comparison(results_by_model, target_col, figures_dir)
 

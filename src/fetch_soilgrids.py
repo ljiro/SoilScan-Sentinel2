@@ -523,7 +523,7 @@ def fetch_all(df: pd.DataFrame, delay: float = 0.5,
             print(f"failed: {exc}")
             result = {}
         cache[key] = result
-        n_ok = sum(1 for v in result.values() if isinstance(v, float) and np.isfinite(v))
+        n_ok = sum(1 for v in result.values() if np.isfinite(v))
         print(f"{n_ok} values" if result else "no data")
         if mode == "rest" and i < len(pts) - 1:
             time.sleep(delay)
