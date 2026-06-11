@@ -918,7 +918,7 @@ def _print_one_model(model_name, y_true, y_pred, folds,
                                 target_names=class_names_short, zero_division=0))
     return {
         "model": model_name, "oa": oa, "macro_f1": mf1, "weighted_f1": wf1,
-        "kappa": kappa, "mae": mae_d,
+        "kappa": kappa, "mae": mae_display,
         "mae_real": round(mae_real, 2), "mae_real_unit": real_unit,
         "fold_oa_mean": np.mean(folds["oa"]),       "fold_oa_std": np.std(folds["oa"]),
         "fold_oa_ci95": _ci95(folds["oa"]),

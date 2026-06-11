@@ -228,9 +228,7 @@ def _load_clay_model(device="cpu"):
             for k, v in state.items()
             if k.startswith("model.encoder.")
         }
-        missing, _ = encoder.load_state_dict(enc_state, strict=True)
-        if missing:
-            print(f"  WARNING: missing keys: {missing[:3]}")
+        encoder.load_state_dict(enc_state, strict=True)
         encoder.eval().to(device)
         print(f"  Clay encoder loaded OK on {device}  (dim=1024, depth=24)")
         return encoder
